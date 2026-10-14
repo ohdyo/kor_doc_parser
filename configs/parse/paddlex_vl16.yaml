@@ -1,0 +1,89 @@
+# 설치본 paddlex 3.7.2 의 PaddleOCR-VL-1.6.yaml 사본 + 우리 변경(layout_prep_cpu_workers 명시).
+# 장치·서버 주소·모델 경로는 configs/env.yaml 에서 덮어쓴다.
+# layout_merge_bboxes_mode 의 키는 정수여야 한다(문자열 키는 조용히 무시된다).
+
+pipeline_name: PaddleOCR-VL-1.6
+
+batch_size: 64
+
+use_queues: True
+layout_prep_cpu_workers: 0
+
+use_doc_preprocessor: False
+use_layout_detection: True
+use_chart_recognition: False
+use_seal_recognition: False
+format_block_content: False
+merge_layout_blocks: True
+markdown_ignore_labels:
+  - number
+  - footnote
+  - header
+  - header_image
+  - footer
+  - footer_image
+  - aside_text
+
+SubModules:
+  LayoutDetection:
+    module_name: layout_detection
+    model_name: PP-DocLayoutV3
+    model_dir: null
+    batch_size: 8
+    threshold: 0.3
+    layout_nms: True
+    layout_unclip_ratio: [1.0, 1.0]
+    layout_merge_bboxes_mode:
+      0: "union" # abstract
+      1: "union" # algorithm
+      2: "union" # aside_text
+      3: "large" # chart
+      4: "union" # content
+      5: "large" # display_formula
+      6: "large" # doc_title
+      7: "union" # figure_title
+      8: "union" # footer
+      9: "union" # footer_image
+      10: "union" # footnote
+      11: "union" # formula_number
+      12: "union" # header
+      13: "union" # header_image
+      14: "union" # image
+      15: "large" # inline_formula
+      16: "union" # number
+      17: "large" # paragraph_title
+      18: "union" # reference
+      19: "union" # reference_content
+      20: "union" # seal
+      21: "union" # table
+      22: "union" # text
+      23: "union" # vertical_text
+      24: "union" # vision_footnote
+  VLRecognition:
+    module_name: vl_recognition
+    model_name: PaddleOCR-VL-1.6-0.9B
+    model_dir: null
+    batch_size: -1
+    genai_config:
+      backend: native
+
+SubPipelines:
+  DocPreprocessor:
+    pipeline_name: doc_preprocessor
+    batch_size: 8
+    use_doc_orientation_classify: True
+    use_doc_unwarping: True
+    SubModules:
+      DocOrientationClassify:
+        module_name: doc_text_orientation
+        model_name: PP-LCNet_x1_0_doc_ori
+        model_dir: null
+        batch_size: 8
+      DocUnwarping:
+        module_name: image_unwarping
+        model_name: UVDoc
+        model_dir: null
+
+Serving:
+  extra:
+    max_num_input_imgs: null

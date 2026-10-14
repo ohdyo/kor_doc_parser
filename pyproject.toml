@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kdp"
+version = "0.1.0"
+description = "한국어 PDF → RAG 정형 데이터 파서"
+requires-python = ">=3.10"
+# paddlepaddle(CPU) / paddlepaddle-gpu 3.3.1 은 장치에 맞춰 따로 설치한다.
+dependencies = [
+    "paddleocr==3.7.0",
+    "paddlex==3.7.2",
+    "pypdfium2==5.14.0",
+    "pydantic>=2.5",
+    "PyYAML>=6.0",
+    "typer>=0.12",
+    "numpy",
+    "Pillow",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "reportlab>=4", "jsonschema>=4", "fonttools>=4"]
+
+[project.scripts]
+kdp = "kdp.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: 실제 VLM 을 돌리는 테스트(CPU 에서 쪽당 수 분)"]
+addopts = "-m 'not slow'"
