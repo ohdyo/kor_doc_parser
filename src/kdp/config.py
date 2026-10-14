@@ -1,0 +1,193 @@
+"""설정: configs/env.yaml(머신별 값) + configs/parse/*.yaml(동작) → Settings."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ENV = ROOT / "configs" / "env.yaml"
+DEFAULT_PARSE = ROOT / "configs" / "parse" / "default.yaml"
+
+
+class _Cfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")   # 오타 난 키는 바로 오류
+
+
+# env.yaml
+class VlmEnv(_Cfg):
+    backend: str = "native"
+    server_url: str | None = None
+    api_model_name: str | None = None
+    api_key: str | None = None
+    max_concurrency: int = 32
+
+
+class ModelsEnv(_Cfg):
+    layout_dir: str | None = None
+    vlm_dir: str | None = None
+    doc_ori_dir: str | None = None
+
+
+class PaddlexEnv(_Cfg):
+    cache_home: str | None = None
+    disable_model_source_check: bool = True
+
+
+class PathsEnv(_Cfg):
+    out_dir: str = "./out"
+
+
+class LabelStudioEnv(_Cfg):
+    url: str | None = None
+    api_key: str | None = None
+
+
+class TestEnv(_Cfg):
+    korean_font: str | None = None
+
+
+class Env(_Cfg):
+    device: str = "cpu"
+    vlm: VlmEnv = Field(default_factory=VlmEnv)
+    models: ModelsEnv = Field(default_factory=ModelsEnv)
+    paddlex: PaddlexEnv = Field(default_factory=PaddlexEnv)
+    paths: PathsEnv = Field(default_factory=PathsEnv)
+    label_studio: LabelStudioEnv = Field(default_factory=LabelStudioEnv)
+    test: TestEnv = Field(default_factory=TestEnv)
+
+
+# parse yaml
+class PaddleVL(_Cfg):
+    pipeline_version: str = "v1.6"
+    paddlex_config: str = "paddlex_vl16.yaml"
+    max_new_tokens: int = 4096
+    use_ocr_for_image_block: bool = True
+    use_chart_recognition: bool = True
+    use_seal_recognition: bool = False
+    page_batch: int = 32
+
+
+class Render(_Cfg):
+    dpi: int = 144
+    max_pixels: int = 178_956_970
+
+
+class Nup(_Cfg):
+    enabled: bool = True
+
+
+class TextLayer(_Cfg):
+    mode: Literal["off", "prefer"] = "off"
+
+
+class Classify(_Cfg):
+    page_drop_min_score: float = 0.9
+    aside_keep_min_sentences: int = 2
+    footnote: Literal["keep", "drop"] = "keep"
+    form_blank: Literal["keep_flag", "drop"] = "keep_flag"
+
+
+class MetaCfg(_Cfg):
+    promote: list[str] = Field(default_factory=lambda: ["title", "issuer", "doc_no", "date"])
+    promote_person_fields: bool = False
+
+
+class QCCfg(_Cfg):
+    min_text_layer_agreement: float = 0.9
+    max_drop_char_ratio: float = 0.4
+    max_repeat_ngram_ratio: float = 0.05
+    max_unsupported_char_ratio: float = 0.02
+    max_block_errors: int = 0
+
+
+class BatchCfg(_Cfg):
+    stop_after_consecutive_failures: int = 20
+    doc_retries: int = 1
+
+
+class OutputCfg(_Cfg):
+    write_markdown: bool = True
+    write_jsonl: bool = True
+    save_images: bool = True
+    keep_raw: bool = True
+
+
+class ParseConfig(_Cfg):
+    engine: Literal["paddle_vl"] = "paddle_vl"
+    paddle_vl: PaddleVL = Field(default_factory=PaddleVL)
+    render: Render = Field(default_factory=Render)
+    nup: Nup = Field(default_factory=Nup)
+    orientation: Literal["off", "scan_only"] = "scan_only"
+    text_layer: TextLayer = Field(default_factory=TextLayer)
+    classify: Classify = Field(default_factory=Classify)
+    meta: MetaCfg = Field(default_factory=MetaCfg)
+    qc: QCCfg = Field(default_factory=QCCfg)
+    batch: BatchCfg = Field(default_factory=BatchCfg)
+    output: OutputCfg = Field(default_factory=OutputCfg)
+
+
+class Settings(_Cfg):
+    env: Env
+    parse: ParseConfig
+    paddlex_config_path: Path
+
+
+def _read_yaml(path: Path) -> dict:
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def load_settings(env_path: str | Path | None = None, parse_path: str | Path | None = None) -> Settings:
+    env_file = Path(env_path) if env_path else DEFAULT_ENV
+    parse_file = Path(parse_path) if parse_path else DEFAULT_PARSE
+    if env_path and not env_file.exists():
+        raise FileNotFoundError(env_file)
+    env = Env(**_read_yaml(env_file)) if env_file.exists() else Env()
+    parse = ParseConfig(**_read_yaml(parse_file))
+    px = Path(parse.paddle_vl.paddlex_config)
+    if not px.is_absolute():
+        px = (parse_file.parent / px).resolve()
+    return Settings(env=env, parse=parse, paddlex_config_path=px)
+
+
+def apply_env(env: Env) -> None:
+    """PaddleX 는 import 할 때 환경 변수를 읽으므로 그 전에 부른다."""
+    if env.paddlex.cache_home:
+        os.environ["PADDLE_PDX_CACHE_HOME"] = str(Path(env.paddlex.cache_home).expanduser())
+    if env.paddlex.disable_model_source_check:
+        os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+
+
+def digest(obj) -> str:
+    s = json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
+    return "sha256:" + hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
+
+def engine_hash(s: Settings, engine_desc: dict) -> str:
+    """같으면 GPU 를 다시 돌리지 않는다(설계 7장)."""
+    p = s.parse
+    return digest({
+        "render": p.render.model_dump(),
+        "nup": p.nup.model_dump(),
+        "orientation": p.orientation,
+        "paddle_vl": p.paddle_vl.model_dump(exclude={"page_batch", "paddlex_config"}),
+        "engine": engine_desc,
+    })
+
+
+def assemble_hash(s: Settings, code_version: str) -> str:
+    """이것만 바뀌면 kdp reassemble 로 충분하다."""
+    p = s.parse
+    return digest({
+        "text_layer": p.text_layer.model_dump(),
+        "classify": p.classify.model_dump(),
+        "meta": p.meta.model_dump(),
+        "qc": p.qc.model_dump(),
+        "code": code_version,
+    })

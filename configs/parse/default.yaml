@@ -1,0 +1,39 @@
+# 동작 설정(설계 7장). 머신별 값은 configs/env.yaml.
+
+engine: paddle_vl
+paddle_vl:
+  pipeline_version: v1.6
+  paddlex_config: paddlex_vl16.yaml  # 이 파일 기준 상대 경로
+  max_new_tokens: 4096
+  use_ocr_for_image_block: true      # D14
+  use_chart_recognition: true        # D14
+  use_seal_recognition: false
+  page_batch: 32                     # predict_iter 한 번에 넣는 쪽 수
+
+render: { dpi: 144, max_pixels: 178956970 }
+nup: { enabled: true }
+orientation: scan_only               # off | scan_only
+text_layer: { mode: "off" }          # off | prefer (D13)
+
+classify:
+  page_drop_min_score: 0.9
+  aside_keep_min_sentences: 2
+  footnote: keep                     # D11
+  form_blank: keep_flag              # D2
+
+meta:
+  promote: [title, issuer, doc_no, date]   # D3
+  promote_person_fields: false             # D15
+
+qc:
+  min_text_layer_agreement: 0.9
+  max_drop_char_ratio: 0.4
+  max_repeat_ngram_ratio: 0.05
+  max_unsupported_char_ratio: 0.02
+  max_block_errors: 0
+
+batch:
+  stop_after_consecutive_failures: 20
+  doc_retries: 1
+
+output: { write_markdown: true, write_jsonl: true, save_images: true, keep_raw: true }
