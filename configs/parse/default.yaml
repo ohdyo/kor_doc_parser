@@ -9,11 +9,12 @@ paddle_vl:
   use_chart_recognition: true        # D14
   use_seal_recognition: false
   page_batch: 32                     # predict_iter 한 번에 넣는 쪽 수
+  vlm_skip: [logo, text_layer]       # 훅 C — 로고·PDF 글자가 덮는 글 블록은 VLM 생략(text_layer 는 prefer 일 때만, 쪽마다 검증 표본 2개)
 
 render: { dpi: 144, max_pixels: 178956970 }
 nup: { enabled: true }
 orientation: scan_only               # off | scan_only
-text_layer: { mode: "off" }          # off | prefer (D13)
+text_layer: { mode: "prefer" }       # off | prefer (D13) — M2 에서 test.pdf 로 확인(2026-10-15)
 
 classify:
   page_drop_min_score: 0.9

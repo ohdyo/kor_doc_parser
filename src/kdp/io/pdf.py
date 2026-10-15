@@ -106,16 +106,28 @@ def merge_surrogates(codes: list[int]) -> list[tuple[int, int]]:
     return out
 
 
+_INVISIBLE = {pdfium_c.FPDF_TEXTRENDERMODE_INVISIBLE, pdfium_c.FPDF_TEXTRENDERMODE_CLIP}
+
+
+def _invisible(tp, i: int) -> bool:
+    """렌더 모드가 '안 그림'(스캔 PDF 의 투명 OCR 레이어 등)인 글자."""
+    obj = pdfium_c.FPDFText_GetTextObject(tp, i)
+    return bool(obj) and pdfium_c.FPDFTextObj_GetTextRenderMode(obj) in _INVISIBLE
+
+
 def text_chars(page: pdfium.PdfPage) -> list[dict]:
-    """글자마다 {c, box(l,b,r,t — 회전 전 사용자 공간), gen(PDFium 이 끼워 넣은 문자)}."""
+    """글자마다 {c, box(l,b,r,t — 회전 전 사용자 공간), gen(PDFium 이 끼워 넣은 문자), inv(안 그리는 글자일 때만)}."""
     with PDFIUM_LOCK:
         tp = page.get_textpage()
         try:
             codes = [pdfium_c.FPDFText_GetUnicode(tp, i) for i in range(tp.count_chars())]
-            return [{
-                "c": chr(code),
-                "box": [round(v, 2) for v in tp.get_charbox(i)],
-                "gen": pdfium_c.FPDFText_IsGenerated(tp, i) == 1,
-            } for code, i in merge_surrogates(codes)]
+            out = []
+            for code, i in merge_surrogates(codes):
+                gen = pdfium_c.FPDFText_IsGenerated(tp, i) == 1
+                ch = {"c": chr(code), "box": [round(v, 2) for v in tp.get_charbox(i)], "gen": gen}
+                if not gen and _invisible(tp, i):
+                    ch["inv"] = True
+                out.append(ch)
+            return out
         finally:
             tp.close()

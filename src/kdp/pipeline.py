@@ -7,24 +7,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
-from .assemble.figures import table_img_names
-from .assemble.order import assign_order, kept, output_hash
+from .assemble.figures import join_wrapped, table_img_names
+from .assemble.normalize import normalize
+from .assemble.order import OUTPUT_FIELDS, assign_order, kept, output_hash
+from .assemble.tables import tables
 from .classify.blocks import classify_blocks
+from .classify.pages import classify_pages
 from .config import OutputCfg, Settings, assemble_hash, engine_hash, load_settings
 from .convert import to_page
 from .engine import Engine, PageInput, ReplayEngine, create_engine
 from .engine.base import page_stem
+from .enrich.meta import promote_meta
 from .io.ids import doc_dirname, doc_id_of
 from .io.pdf import PdfInfo, open_pdf, read_info, text_chars
 from .io.pdfium_lock import PDFIUM_LOCK
 from .io.render import render_page, render_scale
-from .io.write import read_json, write_json, write_json_gz, write_jsonl, write_text
+from .io.write import read_json, read_json_gz, write_json, write_json_gz, write_jsonl, write_text
 from .qc.checks import run_checks
 from .schema import Document, ParserInfo, Source
+from .textlayer.extract import apply_text_layer, mark_hidden
 
-ASSEMBLE_CODE_VERSION = "1"
-JSONL_FIELDS = ("type", "bbox", "section_path", "list_level", "text", "html", "continues_from", "header_rows",
-                "caption_id", "unit", "note_ids", "img_path", "figure_text", "truncated", "pii")
+ASSEMBLE_CODE_VERSION = "4"
+JSONL_FIELDS = OUTPUT_FIELDS
 
 
 class RawIncompleteError(RuntimeError):
@@ -85,14 +89,15 @@ def _pages(pdf, info: PdfInfo, settings: Settings, raw_dir: Path):
         with PDFIUM_LOCK:
             page = pdf[p.sheet_no - 1]
         try:
-            write_json_gz(raw_dir / "textlayer" / f"{page_stem(p.sheet_no)}.json.gz", text_chars(page))
             scale = render_scale(p.size, r.dpi, r.max_pixels)
             img = render_page(page, scale)
+            chars = mark_hidden(text_chars(page), img, p.bbox, p.rotation, scale)   # 가려진 글자는 정답으로 쓰지 않는다
+            write_json_gz(raw_dir / "textlayer" / f"{page_stem(p.sheet_no)}.json.gz", chars)
         finally:
             with PDFIUM_LOCK:
                 page.close()
         yield img, PageInput(page_no=p.sheet_no, sheet_no=p.sheet_no, scale=scale,
-                             sheet_size=tuple(p.size), rotation=p.rotation)
+                             sheet_size=tuple(p.size), rotation=p.rotation, user_bbox=tuple(p.bbox))
 
 
 def _finish(info: PdfInfo, raws, doc_dir: Path, settings: Settings) -> Document:
@@ -112,12 +117,28 @@ def _finish(info: PdfInfo, raws, doc_dir: Path, settings: Settings) -> Document:
         ),
         pages=[to_page(r) for r in raws],
     )
+    doc = apply_text_layer(doc, _layers(doc_dir, info), info, prefer=settings.parse.text_layer.mode == "prefer")
+    doc.source.born_digital = all(p.born_digital for p in doc.pages)
+    doc = normalize(doc)
     doc = classify_blocks(doc, settings.parse.classify)
+    doc = classify_pages(doc, settings.parse.classify)
+    doc = tables(doc)
+    doc = join_wrapped(doc)
+    doc = promote_meta(doc, settings.parse.meta)
     doc = assign_order(doc)
     doc = run_checks(doc, raws, settings.parse.qc)
     doc.output_hash = output_hash(doc)
     write_outputs(doc, doc_dir, settings.parse.output)
     return doc
+
+
+def _layers(doc_dir: Path, info: PdfInfo) -> dict[int, list[dict]]:
+    out = {}
+    for p in info.pages:
+        f = doc_dir / "raw" / "textlayer" / f"{page_stem(p.sheet_no)}.json.gz"
+        if f.exists():
+            out[p.sheet_no] = read_json_gz(f)
+    return out
 
 
 def jsonl_rows(doc: Document):

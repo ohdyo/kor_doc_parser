@@ -55,3 +55,30 @@ def test_policy_order_jsonl():
     assert [r["block_id"] for r in rows] == ["p1.b02", "p1.b04", "p1.b05"]
     assert "html" in rows[1] and "text" not in rows[1]
     assert output_hash(doc) == output_hash(doc.model_copy(deep=True))
+
+
+def test_photo_text_split_and_missing_photo():
+    html = ('<table><tr><td><img src="imgs/img_in_image_box_10_10_50_50.jpg" alt="Image"" />안전 점검 사진 '
+            "점검 완료</td></tr></table>")
+    figs = [{"path": "imgs/img_in_image_box_10_10_50_50.jpg", "raw": "안전 점검 사진"}]
+    inp = PageInput(page_no=1, sheet_no=1, scale=2.0, sheet_size=(595.0, 842.0))
+    imgs = {"imgs/img_in_image_box_10_10_50_50.jpg": {"name": "p1.t01.png", "label": "image",
+                                                       "box": [10, 10, 50, 50], "in_html": True},
+            "imgs/img_in_image_box_60_10_90_50.jpg": {"name": "p1.t02.png", "label": "image",
+                                                       "box": [60, 10, 90, 50], "in_html": False}}
+    page = to_page(RawPage(inp, 1190, 1684, 0.1, [RawBlock(0, "table", (0, 0, 100, 100), html,
+                                                           vlm={"figures": figs})], imgs))
+    t = page.blocks[0]
+    assert t.html == '<table><tr><td><img src="imgs/p1.t01.png" alt="안전 점검 사진" /> 점검 완료</td></tr></table>'
+    assert t.figure_text == "안전 점검 사진"                              # 사진 속 글자는 칸 값과 따로
+    assert t.provenance == [{"rule": "table_img_missing", "names": ["p1.t02.png"]}]
+
+
+def test_output_hash_covers_jsonl_fields_and_meta():
+    doc = assign_order(classify_blocks(_doc(to_page(_raw())), Classify()))
+    base = output_hash(doc)
+    routed = doc.model_copy(deep=True)
+    routed.pages[0].blocks[3].route = "image"
+    meta = doc.model_copy(deep=True)
+    meta.meta = {"date": "2026-07"}
+    assert len({base, output_hash(routed), output_hash(meta)}) == 3

@@ -69,6 +69,25 @@ def _inside(box, outer) -> bool:
 
 
 class KdpPipeline(_vl._PaddleOCRVLPipeline):
+    kdp_plans: dict = {}                                      # id(쪽 이미지) → SkipPlan — 엔진이 묶음마다 채운다
+
+    def _kdp_skip(self, image, out):
+        """훅 C — 쪽 준비 결과에서 건너뛸 블록의 VLM 입력을 뺀다. 넘긴 배열이 같은 객체로 온다(방향 보정을 끈 쪽)."""
+        plan = self.kdp_plans.get(id(image))
+        if plan is None:
+            return out
+        i, blocks, entries, spotting, drops = out
+        skip = plan.choose(blocks, image)
+        for j, why in skip.items():
+            blocks[j]["kdp_skipped"] = why
+        return i, blocks, [e for e in entries if e[1] not in skip], spotting, drops
+
+    def _paddleocr_vl_prepare_page_serial_benchmarked(self, payload):
+        return self._kdp_skip(payload[1], super()._paddleocr_vl_prepare_page_serial_benchmarked(payload))
+
+    def _paddleocr_vl_prepare_page_core(self, payload):
+        return self._kdp_skip(payload[1], super()._paddleocr_vl_prepare_page_core(payload))
+
     """훅 B: 블록마다 VLM 원문·finish_reason·반복 절단 여부·병합 대표를 붙인다(obj.kdp, obj.kdp_merged_into).
     설치본은 표 안 그림 목록을 묶음의 모든 쪽이 함께 써서 다른 쪽의 같은 위치 그림까지 지우므로 쪽마다 따로 조립한다."""
 
@@ -119,7 +138,8 @@ class KdpPipeline(_vl._PaddleOCRVLPipeline):
                     leaders[gid] = j
                 elif gid in leaders:
                     obj.kdp_merged_into = j2out[leaders[gid]]
-            obj.kdp = _vlm_meta(blk, r) if r is not None else None
+            obj.kdp = _vlm_meta(blk, r) if r is not None else (
+                {"skipped": blk["kdp_skipped"]} if blk.get("kdp_skipped") else None)   # 훅 C 가 건너뛴 블록
             if blk["label"] == "table":
                 tables.append((blk["box"], obj))
         for box, meta in figures:

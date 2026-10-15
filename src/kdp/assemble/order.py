@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterator
 
 from ..schema import Block, Document, Page
@@ -31,10 +32,14 @@ def assign_order(doc: Document) -> Document:
     return doc
 
 
+OUTPUT_FIELDS = ("type", "bbox", "section_path", "list_level", "text", "html", "continues_from", "header_rows",
+                 "caption_id", "unit", "note_ids", "route", "route_reason", "img_path", "figure_text", "truncated", "pii")
+
+
 def output_hash(doc: Document) -> str:
-    h = hashlib.sha256()
+    """청킹용 블록 목록에 나가는 값 전부와 문서 메타 — 이것이 바뀐 문서만 다시 적재한다(기획서 4.4)."""
+    h = hashlib.sha256(json.dumps(doc.meta, sort_keys=True, ensure_ascii=False).encode("utf-8") + b"\x1d")
     for _, b in kept(doc):
-        for part in (b.type, b.text, b.html, b.figure_text):
-            h.update((part or "").encode("utf-8") + b"\x1f")
-        h.update(b"\x1e")
+        row = {f: getattr(b, f) for f in OUTPUT_FIELDS}
+        h.update(json.dumps(row, sort_keys=True, ensure_ascii=False, default=list).encode("utf-8") + b"\x1e")
     return "sha256:" + h.hexdigest()

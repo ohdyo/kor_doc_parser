@@ -40,6 +40,8 @@ class Block(_Model):
     note_ids: list[str] | None = None
     continues_from: str | None = None
     img_path: str | None = None
+    route: Literal["html", "image"] | None = None        # 표 갈래(D18) — image 면 후속 단계가 그림으로도 다룬다
+    route_reason: str | None = None                     # photo_in_cell | failed | visual
     figure_text: str | None = None       # 그림·차트 속 인쇄 글자(D14)
     meta: dict[str, str] | None = None
     truncated: Literal["length", "repetition"] | None = None
@@ -60,6 +62,7 @@ class Page(_Model):
     keep: bool = True
     form: bool | None = None
     born_digital: bool | None = None
+    text_layer_agreement: float | None = None   # 레이어 글자 중 모델 출력에도 있는 비율(8.5)
     n_up: NUp | None = None
     blocks: list[Block] = Field(default_factory=list)
 

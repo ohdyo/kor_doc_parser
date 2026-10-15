@@ -15,10 +15,13 @@ import yaml
 
 from ..config import Settings, apply_env, digest
 from ..io.ids import block_id
-from ..io.write import write_json, write_png
+from ..io.render import user_box_to_display
+from ..io.write import read_json_gz, write_json, write_png
+from ..textlayer.extract import MIN_PAGE_CHARS, plausible, visible
 from .base import PageInput, RawPage, page_stem, raw_page_from_files
+from .skip import SkipPlan
 
-CODE_VERSION = "1"
+CODE_VERSION = "4"
 CROP_LABELS = {"table", "chart", "display_formula"}   # PaddleX 가 크롭을 안 주는 것 — 렌더에서 직접 자른다
 PIPELINE_NAMES = {"v1": "PaddleOCR-VL", "v1.5": "PaddleOCR-VL-1.5", "v1.6": "PaddleOCR-VL-1.6"}
 
@@ -159,6 +162,7 @@ class PaddleVLEngine:
             "vlm": vlm if native else env.vlm.api_model_name,
             "backend": env.vlm.backend,
             "response_hook": self.hooked,
+            "vlm_skip": self._skip(),
             "paddleocr": version("paddleocr"),
             "paddlex": version("paddlex"),
             "paddlex_config": digest(self._snapshot),
@@ -182,13 +186,37 @@ class PaddleVLEngine:
         if batch:
             yield from self._run_batch(batch, raw_dir)
 
+    def _skip(self) -> list[str]:
+        """실제로 건너뛰는 것 — text_layer 는 레이어 우선(prefer)일 때만."""
+        p = self._settings.parse
+        return [k for k in p.paddle_vl.vlm_skip if k != "text_layer" or p.text_layer.mode == "prefer"]
+
+    def _plan(self, inp: PageInput, raw_dir: Path) -> SkipPlan:
+        chars = None
+        f = raw_dir / "textlayer" / f"{page_stem(inp.sheet_no)}.json.gz"
+        if "text_layer" in self._skip() and inp.user_bbox and not inp.rot90_k and f.exists():
+            real = [c for c in read_json_gz(f) if not c["gen"] and not c["c"].isspace()]
+            seen = [c for c in real if visible(c)]                   # 투명 OCR 레이어·가려진 글자는 뺀다
+            if len(seen) >= MIN_PAGE_CHARS and len(seen) >= 0.5 * len(real) and plausible("".join(c["c"] for c in seen)):
+                (ox, oy), s = inp.origin, inp.scale
+                chars = []
+                for c in seen:
+                    l, t, r, b = user_box_to_display(c["box"], inp.user_bbox, inp.rotation)
+                    chars.append((((l - ox) * s, (t - oy) * s, (r - ox) * s, (b - oy) * s), c["c"]))
+        return SkipPlan("logo" in self._skip(), chars)
+
     def _run_batch(self, batch, raw_dir: Path):
         images = [img for img, _ in batch]          # 반드시 list — 튜플·제너레이터는 결과가 0건이다
         n = 0
-        results = self._ocr.predict_iter(images, max_new_tokens=self._settings.parse.paddle_vl.max_new_tokens)
-        for res, (img, inp) in zip(results, batch):
-            n += 1
-            yield self._save(res, img, inp, raw_dir)
+        pipe = self._ocr.paddlex_pipeline
+        pipe.kdp_plans = {id(img): self._plan(inp, raw_dir) for img, inp in batch}
+        try:
+            results = self._ocr.predict_iter(images, max_new_tokens=self._settings.parse.paddle_vl.max_new_tokens)
+            for res, (img, inp) in zip(results, batch):
+                n += 1
+                yield self._save(res, img, inp, raw_dir)
+        finally:
+            pipe.kdp_plans = {}
         if n != len(batch):
             raise EngineError(f"엔진 결과 {n}건 / 입력 {len(batch)}쪽")
 

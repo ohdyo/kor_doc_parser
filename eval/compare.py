@@ -60,9 +60,21 @@ def html_grid(s: str) -> list[int] | None:
     return [len(rows), max(c for _, c in occ) + 1] if occ else None
 
 
+def th_rows(s: str) -> int:
+    """앞에서부터 모든 칸이 <th> 인 행 수."""
+    n = 0
+    for row in re.split(r"<tr[\s>]", s, flags=re.I)[1:]:
+        cells = re.findall(r"<t([dh])[\s>]", row, flags=re.I)
+        if not cells or any(c.lower() != "h" for c in cells):
+            break
+        n += 1
+    return n
+
+
 def _blk(kind, bbox, body, text, label, html=None) -> dict:
     return {"kind": kind, "bbox": [round(v, 1) for v in bbox] if bbox else None, "body": bool(body), "label": label,
-            "text": strip_html(html) if html else (text or ""), "grid": html_grid(html) if html else None}
+            "text": strip_html(html) if html else (text or ""), "grid": html_grid(html) if html else None,
+            "header_rows": th_rows(html) if html else None}
 
 
 # ---- 비교군 실행 ----
@@ -100,6 +112,11 @@ def run_docling(pdf: Path, settings) -> dict:
         if isinstance(item, TableItem):
             b = _blk("table", box, body, " ".join(c.text for c in item.data.table_cells), item.label.value)
             b["grid"] = [item.data.num_rows, item.data.num_cols]
+            b["header_rows"] = next((i for i, row in enumerate(item.data.grid)
+                                     if not row or not all(c.column_header for c in row)), len(item.data.grid))
+            if item.captions and (cap := item.captions[0].resolve(doc)).prov:
+                cp = cap.prov[0]
+                b["caption_bbox"] = list(cp.bbox.to_top_left_origin(doc.pages[cp.page_no].size.height).as_tuple())
         elif isinstance(item, PictureItem):
             b = _blk("figure", box, body, "", item.label.value)
         else:
@@ -141,12 +158,18 @@ def run_paddle_default(pdf: Path, settings) -> dict:
 
 def load_kdp(doc_dir: Path) -> dict:
     d = read_json(doc_dir / "document.json")
+    boxes = {b["id"]: b["bbox"] for p in d["pages"] for b in p["blocks"]}
     pages = {}
     for p in d["pages"]:
-        pages[p["page_no"]] = [
-            _blk("table" if b["type"] == "table" else "figure" if b["type"] in FIGURE_LABELS else "text", b["bbox"],
-                 p["keep"] and b["keep"], b.get("text") or b.get("figure_text"), b["type"], html=b.get("html"))
-            for b in p["blocks"]]
+        pages[p["page_no"]] = []
+        for b in p["blocks"]:
+            blk = _blk("table" if b["type"] == "table" else "figure" if b["type"] in FIGURE_LABELS else "text", b["bbox"],
+                       p["keep"] and b["keep"], b.get("text") or b.get("figure_text"), b["type"], html=b.get("html"))
+            if b.get("caption_id"):
+                blk["caption_bbox"] = boxes[b["caption_id"]]
+            if any(pv.get("rule") == "join_wrapped" for pv in b.get("provenance") or []):
+                blk["joined"] = True
+            pages[p["page_no"]].append(blk)
     return {"seconds": read_json(doc_dir / "raw" / "engine.json").get("seconds"), "pages": pages}
 
 
@@ -265,16 +288,26 @@ def evaluate(segs: dict, golden: dict, run: dict) -> dict:
         r = removed.setdefault(j["kind"], [0, 0])
         r[0] += not kept
         r[1] += 1
-    det = grid = 0
+    det = grid = head = cap = 0
     for g in tables:
         cands = [b for b in pages.get(g["page"], [])
                  if b["body"] and b["kind"] == "table" and _iou(b["bbox"], g["bbox"]) >= 0.5]
         det += bool(cands)
         grid += any(b["grid"] == [g["rows"], g["cols"]] for b in cands)
+        best = max(cands, key=lambda b: _iou(b["bbox"], g["bbox"])) if cands else None
+        if best:
+            head += (best.get("header_rows") or 0) == g.get("header_rows", 0)
+            gc, bc = g.get("caption"), best.get("caption_bbox")
+            cap += (gc is None and bc is None) or (gc is not None and bc is not None and
+                                                   _center_in(bc, [[gc[0] - 3, gc[1] - 3, gc[2] + 3, gc[3] + 3]]))
+    junk_text = sum(len(re.findall(r"\\n(?![A-Za-z])", b["text"])) + len(re.findall(r"\$[^$\n]*[\\^_][^$\n]*\$", b["text"]))
+                    for bs in pages.values() for b in bs if b["body"])           # 모델 잡문자 꼴만 — 영문자 앞 \n(경로)·금액 $ 는 세지 않는다
     fig_chars = sum(len(norm(b["text"])) for f in figs for b in pages.get(f["page"], [])
-                    if b["body"] and b["bbox"] and _inter(f["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"]))
+                    if b["body"] and b["bbox"] and not b.get("joined")
+                    and _inter(f["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"]))   # 그림 감싼 문단을 이은 블록은 빼고
     return {"seconds": run.get("seconds"), "n_pages": len(golden["pages"]), "text": text, "leak": leak, "junk_removed": removed,
-            "tables": {"detected": det, "grid_ok": grid, "total": len(tables)}, "figure_chars": fig_chars}
+            "tables": {"detected": det, "grid_ok": grid, "header_ok": head, "caption_ok": cap, "total": len(tables)},
+            "figure_chars": fig_chars, "junk_text": junk_text}
 
 
 # ---- 보고 ----
@@ -292,6 +325,9 @@ def render(report: dict) -> str:
     rows += [(f"잡요소 제거 — {k}", lambda r, k=k: _frac(r["junk_removed"].get(k, [0, 0]))) for k in kinds]
     rows += [("표 검출(IoU≥0.5)", lambda r: _frac([r["tables"]["detected"], r["tables"]["total"]])),
              ("표 행·열 일치", lambda r: _frac([r["tables"]["grid_ok"], r["tables"]["total"]])),
+             ("표 머리행 일치", lambda r: _frac([r["tables"].get("header_ok", 0), r["tables"]["total"]])),
+             ("표 제목 연결", lambda r: _frac([r["tables"].get("caption_ok", 0), r["tables"]["total"]])),
+             ("출력 잡문자(글자 그대로의 \\n·LaTeX)", lambda r: str(r.get("junk_text", 0))),
              ("그림 영역에서 읽은 글자 수", lambda r: str(r["figure_chars"])),
              ("처리 시간(쪽당)", lambda r: f"{r['seconds']:.0f}초 ({r['seconds'] / r['n_pages']:.1f}초)"
               if r["seconds"] is not None else "—")]
