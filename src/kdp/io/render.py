@@ -17,13 +17,22 @@ def render_scale(size_pt: tuple[float, float], dpi: int, max_pixels: int) -> flo
     return s
 
 
-def render_page(page, scale: float) -> np.ndarray:
-    """BGR uint8 (H, W, 3). 쪽의 /Rotate 는 PDFium 이 반영한다."""
+def render_page(page, scale: float, crop=(0, 0, 0, 0)) -> np.ndarray:
+    """BGR uint8 (H, W, 3). 쪽의 /Rotate 는 PDFium 이 반영한다. crop = 표시 쪽 가장자리에서 잘라 낼 pt (왼, 아래, 오른, 위)."""
     with PDFIUM_LOCK:
-        bm = page.render(scale=scale)
+        bm = page.render(scale=scale, crop=crop)
         img = bm.to_numpy().copy()
         bm.close()
     return img[:, :, :3] if img.ndim == 3 and img.shape[2] == 4 else img
+
+
+def render_region(page, scale: float, region, size_pt) -> tuple[np.ndarray, tuple[float, float]]:
+    """시트 안 영역(표시 pt, 좌상단 원점)만 scale 로 다시 그린다 — 모아찍기 논리 페이지(설계 4장).
+    (BGR, 그림 왼쪽 위의 시트 pt). pypdfium2 는 잘라 낼 양을 px 로 올림하므로 원점도 그 px 로 적는다."""
+    x0, y0, x1, y1 = region
+    w, h = size_pt
+    img = render_page(page, scale, crop=(x0, max(0.0, h - y1), max(0.0, w - x1), y0))
+    return img, (math.ceil(x0 * scale) / scale, math.ceil(y0 * scale) / scale)
 
 
 def user_to_display(x: float, y: float, bbox, rotation: int) -> tuple[float, float]:

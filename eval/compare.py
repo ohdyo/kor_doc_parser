@@ -14,6 +14,7 @@ import time
 import unicodedata
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pypdfium2 as pdfium
@@ -30,6 +31,9 @@ from kdp.io.write import read_json, write_json
 RUNS = ("textlayer", "docling", "paddle_default", "kdp")
 NAMES = {"textlayer": "텍스트 레이어", "docling": "docling", "paddle_default": "PaddleOCR-VL 기본", "kdp": "kdp"}
 MIN_SEG = 4                      # 이보다 짧은 레이어 조각은 시험하지 않는다
+COVER = 0.5                      # 정답 상자의 이만큼 이상을 덮는 블록도 겹친 것으로 본다(제목·다음 줄을 한 블록으로 묶으면 IoU 가 낮다)
+PART = 0.2                       # 검출기가 한 항목을 여러 블록으로 나눴을 때 조각 하나가 덮어야 하는 몫
+TITLE_TYPES = {"doc_title", "paragraph_title"}             # PP-DocLayoutV3 제목 라벨(kdp 블록 type 도 같다)
 _TAG = re.compile(r"<[^>]+>")
 _SKIP = re.compile(r"[\s|#*_`\-–•·ㆍᆞ▪▫◦○●■□◆◇▶►]+")    # 공백·마크업·글머리표(파서마다 따로 떼어 둔다)
 _DOTS = re.compile(r"\.{2,}")                              # 목차 점선
@@ -60,9 +64,23 @@ def html_grid(s: str) -> list[int] | None:
     return [len(rows), max(c for _, c in occ) + 1] if occ else None
 
 
-def _blk(kind, bbox, body, text, label, html=None) -> dict:
+def th_rows(s: str) -> int:
+    """앞에서부터 모든 칸이 <th> 인 행 수."""
+    n = 0
+    for row in re.split(r"<tr[\s>]", s, flags=re.I)[1:]:
+        cells = re.findall(r"<t([dh])[\s>]", row, flags=re.I)
+        if not cells or any(c.lower() != "h" for c in cells):
+            break
+        n += 1
+    return n
+
+
+def _blk(kind, bbox, body, text, label, html=None, heading=False, heading_level=None, list_level=None) -> dict:
+    """heading = 제목 역할. heading_level·list_level 은 1 이 가장 바깥 수준(문서 제목은 0, 모르면 None)."""
     return {"kind": kind, "bbox": [round(v, 1) for v in bbox] if bbox else None, "body": bool(body), "label": label,
-            "text": strip_html(html) if html else (text or ""), "grid": html_grid(html) if html else None}
+            "text": strip_html(html) if html else (text or ""), "grid": html_grid(html) if html else None,
+            "header_rows": th_rows(html) if html else None,
+            "heading": heading, "heading_level": heading_level, "list_level": list_level}
 
 
 # ---- 비교군 실행 ----
@@ -77,6 +95,21 @@ def run_textlayer(pdf: Path, settings) -> dict:
         pages[i + 1] = [_blk("text", [0, 0, w, h], True, "".join(c["c"] for c in text_chars(doc[i])), "page")]
     doc.close()
     return {"seconds": time.perf_counter() - t, "pages": pages}
+
+
+def _docling_struct(item, doc) -> dict:
+    """docling 의 제목·목록 — 문서 제목(TitleItem, 마크다운 '#')은 0, 섹션 제목은 SectionHeaderItem.level(기본 파이프라인은
+    수준 추정이 꺼져 모두 1, 마크다운 '#' 은 level+1 개). 목록 항목 깊이는 감싼 ListGroup 수(PDF 파이프라인은 중첩이 없어 1)."""
+    from docling_core.types.doc import ListGroup, ListItem, SectionHeaderItem, TitleItem
+
+    if isinstance(item, TitleItem | SectionHeaderItem):
+        return {"heading": True, "heading_level": item.level if isinstance(item, SectionHeaderItem) else 0}
+    depth, ref = 0, item.parent if isinstance(item, ListItem) else None
+    while ref is not None:
+        node = ref.resolve(doc)
+        depth += isinstance(node, ListGroup)
+        ref = node.parent
+    return {"list_level": depth or None}
 
 
 def run_docling(pdf: Path, settings) -> dict:
@@ -100,12 +133,31 @@ def run_docling(pdf: Path, settings) -> dict:
         if isinstance(item, TableItem):
             b = _blk("table", box, body, " ".join(c.text for c in item.data.table_cells), item.label.value)
             b["grid"] = [item.data.num_rows, item.data.num_cols]
+            b["header_rows"] = next((i for i, row in enumerate(item.data.grid)
+                                     if not row or not all(c.column_header for c in row)), len(item.data.grid))
+            if item.captions and (cap := item.captions[0].resolve(doc)).prov:
+                cp = cap.prov[0]
+                b["caption_bbox"] = list(cp.bbox.to_top_left_origin(doc.pages[cp.page_no].size.height).as_tuple())
         elif isinstance(item, PictureItem):
             b = _blk("figure", box, body, "", item.label.value)
         else:
-            b = _blk("text", box, body, getattr(item, "text", ""), item.label.value)
+            b = _blk("text", box, body, getattr(item, "text", ""), item.label.value, **_docling_struct(item, doc))
         pages.setdefault(prov.page_no, []).append(b)
     return {"seconds": time.perf_counter() - t, "pages": pages}
+
+
+def paddle_title_level(label: str, content: str) -> int | None:
+    """설치본 기본 마크다운의 제목 수준. predict() 는 restructure_pages(relevel_titles)를 부르지 않아 paragraph_title 은
+    제목 안 '.' 개수로 '##'·'###'… 이 되고(paddlex format_para_title → format_title), doc_title 은 '#' 하나다.
+    '#' 개수 − 1 을 돌려준다 — docling 처럼 섹션 제목이 1, 문서 제목이 0. 제목 라벨이 아니면 None."""
+    if label not in TITLE_TYPES:
+        return None
+    if label == "doc_title":
+        return 0
+    from paddlex.inference.common.result.converter.markdown_format_funcs import format_para_title
+
+    md = format_para_title(SimpleNamespace(content=content))
+    return len(md) - len(md.lstrip("#")) - 1
 
 
 def run_paddle_default(pdf: Path, settings) -> dict:
@@ -133,7 +185,9 @@ def run_paddle_default(pdf: Path, settings) -> dict:
             label, content = b["block_label"], b.get("block_content") or ""
             box = [v / s for v in b["block_bbox"]]
             kind = "table" if label == "table" else "figure" if label in FIGURE_LABELS else "text"
-            blocks.append(_blk(kind, box, label not in ignore, content, label, html=content if kind == "table" else None))
+            lv = paddle_title_level(label, content)
+            blocks.append(_blk(kind, box, label not in ignore, content, label, html=content if kind == "table" else None,
+                               heading=lv is not None, heading_level=lv))
         pages[i + 1] = blocks
     doc.close()
     return {"seconds": seconds, "pages": pages}
@@ -141,12 +195,20 @@ def run_paddle_default(pdf: Path, settings) -> dict:
 
 def load_kdp(doc_dir: Path) -> dict:
     d = read_json(doc_dir / "document.json")
+    boxes = {b["id"]: b["bbox"] for p in d["pages"] for b in p["blocks"]}
     pages = {}
     for p in d["pages"]:
-        pages[p["page_no"]] = [
-            _blk("table" if b["type"] == "table" else "figure" if b["type"] in FIGURE_LABELS else "text", b["bbox"],
-                 p["keep"] and b["keep"], b.get("text") or b.get("figure_text"), b["type"], html=b.get("html"))
-            for b in p["blocks"]]
+        pages[p["page_no"]] = []
+        for b in p["blocks"]:
+            blk = _blk("table" if b["type"] == "table" else "figure" if b["type"] in FIGURE_LABELS else "text", b["bbox"],
+                       p["keep"] and b["keep"], b.get("text") or b.get("figure_text"), b["type"], html=b.get("html"),
+                       heading=b["type"] in TITLE_TYPES or b.get("heading_level") is not None,   # 규칙이 제목으로 올린 글 블록 포함
+                       heading_level=b.get("heading_level"), list_level=b.get("list_level"))
+            if b.get("caption_id"):
+                blk["caption_bbox"] = boxes[b["caption_id"]]
+            if any(pv.get("rule") == "join_wrapped" for pv in b.get("provenance") or []):
+                blk["joined"] = True
+            pages[p["page_no"]].append(blk)
     return {"seconds": read_json(doc_dir / "raw" / "engine.json").get("seconds"), "pages": pages}
 
 
@@ -241,6 +303,18 @@ def _center_in(box, regions) -> bool:
     return any(r[0] <= x <= r[2] and r[1] <= y <= r[3] for r in regions)
 
 
+def _over(pages: dict, g: dict) -> list[dict]:
+    """정답 상자와 겹치는 출력 본문 블록(IoU 0.5 이상이거나 정답 상자의 COVER 이상을 덮음) — 가장 많이 겹치는 것부터."""
+    cands = [b for b in pages.get(g["page"], []) if b["body"] and b["bbox"]
+             and (_iou(b["bbox"], g["bbox"]) >= 0.5 or _inter(b["bbox"], g["bbox"]) >= COVER * _area(g["bbox"]))]
+    if not cands:                                   # 한 항목이 여러 블록으로 나뉘었으면 함께 COVER 를 덮는 조각들(위에서부터)
+        parts = [b for b in pages.get(g["page"], []) if b["body"] and b["bbox"]
+                 and _inter(b["bbox"], g["bbox"]) >= PART * _area(g["bbox"])]
+        if sum(_inter(b["bbox"], g["bbox"]) for b in parts) >= COVER * _area(g["bbox"]):
+            return sorted(parts, key=lambda b: b["bbox"][1])
+    return sorted(cands, key=lambda b: -_iou(b["bbox"], g["bbox"]))
+
+
 def evaluate(segs: dict, golden: dict, run: dict) -> dict:
     pages = {int(k): v for k, v in run["pages"].items()}
     junk, tables, figs = golden.get("junk", []), golden.get("tables", []), golden.get("figures", [])
@@ -265,16 +339,40 @@ def evaluate(segs: dict, golden: dict, run: dict) -> dict:
         r = removed.setdefault(j["kind"], [0, 0])
         r[0] += not kept
         r[1] += 1
-    det = grid = 0
+    det = grid = head = cap = 0
     for g in tables:
         cands = [b for b in pages.get(g["page"], [])
                  if b["body"] and b["kind"] == "table" and _iou(b["bbox"], g["bbox"]) >= 0.5]
         det += bool(cands)
         grid += any(b["grid"] == [g["rows"], g["cols"]] for b in cands)
+        best = max(cands, key=lambda b: _iou(b["bbox"], g["bbox"])) if cands else None
+        if best:
+            head += (best.get("header_rows") or 0) == g.get("header_rows", 0)
+            gc, bc = g.get("caption"), best.get("caption_bbox")
+            cap += (gc is None and bc is None) or (gc is not None and bc is not None and
+                                                   _center_in(bc, [[gc[0] - 3, gc[1] - 3, gc[2] + 3, gc[3] + 3]]))
+    junk_text = sum(len(re.findall(r"\\n(?![A-Za-z])", b["text"])) + len(re.findall(r"\$[^$\n]*[\\^_][^$\n]*\$", b["text"]))
+                    for bs in pages.values() for b in bs if b["body"])           # 모델 잡문자 꼴만 — 영문자 앞 \n(경로)·금액 $ 는 세지 않는다
     fig_chars = sum(len(norm(b["text"])) for f in figs for b in pages.get(f["page"], [])
-                    if b["body"] and b["bbox"] and _inter(f["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"]))
+                    if b["body"] and b["bbox"] and not b.get("joined")
+                    and _inter(f["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"]))   # 그림 감싼 문단을 이은 블록은 빼고
+    heads, items = golden.get("headings", []), golden.get("lists", [])
+    found = level_ok = 0
+    for g in heads:                                 # 겹치는 블록이 제목 역할이면 찾음, 가장 많이 겹치는 제목 블록의 수준을 본다
+        hs = [b for b in _over(pages, g) if b.get("heading")]
+        found += bool(hs)
+        level_ok += bool(hs) and hs[0].get("heading_level") == g["level"]
+    list_ok = 0
+    for g in items:                                 # 가장 많이 겹치는 블록의 list_level — 나뉜 항목은 조각 모두가 맞아야 한다
+        cands = _over(pages, g)
+        if not cands:
+            continue
+        whole = _iou(cands[0]["bbox"], g["bbox"]) >= 0.5 or _inter(cands[0]["bbox"], g["bbox"]) >= COVER * _area(g["bbox"])
+        list_ok += all(b.get("list_level") == g["level"] for b in (cands[:1] if whole else cands))
     return {"seconds": run.get("seconds"), "n_pages": len(golden["pages"]), "text": text, "leak": leak, "junk_removed": removed,
-            "tables": {"detected": det, "grid_ok": grid, "total": len(tables)}, "figure_chars": fig_chars}
+            "tables": {"detected": det, "grid_ok": grid, "header_ok": head, "caption_ok": cap, "total": len(tables)},
+            "figure_chars": fig_chars, "junk_text": junk_text,
+            "headings": {"found": [found, len(heads)], "level_ok": [level_ok, found]}, "lists": {"level_ok": [list_ok, len(items)]}}
 
 
 # ---- 보고 ----
@@ -292,6 +390,12 @@ def render(report: dict) -> str:
     rows += [(f"잡요소 제거 — {k}", lambda r, k=k: _frac(r["junk_removed"].get(k, [0, 0]))) for k in kinds]
     rows += [("표 검출(IoU≥0.5)", lambda r: _frac([r["tables"]["detected"], r["tables"]["total"]])),
              ("표 행·열 일치", lambda r: _frac([r["tables"]["grid_ok"], r["tables"]["total"]])),
+             ("표 머리행 일치", lambda r: _frac([r["tables"].get("header_ok", 0), r["tables"]["total"]])),
+             ("표 제목 연결", lambda r: _frac([r["tables"].get("caption_ok", 0), r["tables"]["total"]])),
+             ("제목 찾음", lambda r: _frac(r.get("headings", {}).get("found", [0, 0]))),
+             ("제목 수준 일치(찾은 제목 중)", lambda r: _frac(r.get("headings", {}).get("level_ok", [0, 0]))),
+             ("항목 수준 일치", lambda r: _frac(r.get("lists", {}).get("level_ok", [0, 0]))),
+             ("출력 잡문자(글자 그대로의 \\n·LaTeX)", lambda r: str(r.get("junk_text", 0))),
              ("그림 영역에서 읽은 글자 수", lambda r: str(r["figure_chars"])),
              ("처리 시간(쪽당)", lambda r: f"{r['seconds']:.0f}초 ({r['seconds'] / r['n_pages']:.1f}초)"
               if r["seconds"] is not None else "—")]
@@ -332,6 +436,10 @@ def main(argv=None) -> None:
                     print(f"{name} 건너뜀({e.name} 없음) — 설치된 env 에서 --runs {name} 으로 먼저 돌린다", file=sys.stderr)
                     continue
             run = read_json(cache)
+            if name == "paddle_default":                   # 구조 지표 전 저장본 — 제목 수준은 라벨·글자로 정해지니 다시 돌리지 않고 채운다
+                for b in (b for bs in run["pages"].values() for b in bs if "heading" not in b):
+                    lv = paddle_title_level(b["label"], b["text"])
+                    b["heading"], b["heading_level"] = lv is not None, lv
         report[name] = evaluate(segs, golden, run)
     write_json(doc_dir / "compare" / "report.json", report, indent=1)
     print(render(report))

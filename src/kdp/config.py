@@ -71,6 +71,7 @@ class PaddleVL(_Cfg):
     use_chart_recognition: bool = True
     use_seal_recognition: bool = False
     page_batch: int = 32
+    vlm_skip: list[Literal["logo", "text_layer"]] = Field(default_factory=lambda: ["logo", "text_layer"])   # 훅 C
 
 
 class Render(_Cfg):

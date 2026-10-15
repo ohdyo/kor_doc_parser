@@ -19,6 +19,7 @@ class PageInput:
     n_up: dict | None = None                      # {cols, rows, cell, region}
     rotation: int = 0                             # PDF /Rotate
     rot90_k: int = 0                              # prep 에서 np.rot90(img, k) 로 세운 횟수
+    user_bbox: tuple[float, float, float, float] | None = None   # PDF 사용자 공간 쪽 상자 — 훅 C 가 레이어 글자를 그림 좌표로
 
 
 @dataclass

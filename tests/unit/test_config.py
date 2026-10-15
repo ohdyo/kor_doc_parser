@@ -4,10 +4,13 @@ from pydantic import ValidationError
 from kdp.config import DEFAULT_PARSE, ParseConfig, assemble_hash, engine_hash, load_settings
 
 
-def test_defaults_load(settings):
-    assert settings.parse.text_layer.mode == "off"          # YAML 의 off 가 False 로 바뀌지 않는다
+def test_defaults_load(settings, tmp_path):
+    assert settings.parse.text_layer.mode == "prefer"       # D13 — M2 에서 켬
     assert settings.paddlex_config_path.exists()
     assert settings.env.vlm.backend in {"native", "vllm-server"}
+    f = tmp_path / "off.yaml"
+    f.write_text('text_layer: { mode: "off" }\n', encoding="utf-8")
+    assert load_settings(parse_path=f).parse.text_layer.mode == "off"   # YAML 의 off 가 False 로 바뀌지 않는다
 
 
 def test_unknown_key_rejected():

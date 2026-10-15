@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"                 # 1.1: 블록 heading_level(M3)
 
 PageClass = Literal["normal", "cover", "toc", "blank", "divider", "form_blank", "approval"]
 BBox = tuple[float, float, float, float]
@@ -18,7 +18,7 @@ class _Model(BaseModel):
 class NUp(_Model):
     cols: int
     rows: int
-    cell: tuple[int, int]
+    cell: tuple[int, int]                # (열, 행) — 왼쪽 위부터 행 우선
     region: BBox                         # 시트 안 이 논리 페이지 영역(pt)
 
 
@@ -34,12 +34,15 @@ class Block(_Model):
     score: float | None = None
     section_path: list[str] | None = None
     list_level: int | None = None
+    heading_level: int | None = None     # 제목 수준 — 문서 제목 0, 섹션 1 부터(작을수록 큼), 확신이 없으면 비운다(기획서 4.3 규칙 3)
     header_rows: int | None = None
     caption_id: str | None = None
     unit: str | None = None
     note_ids: list[str] | None = None
     continues_from: str | None = None
     img_path: str | None = None
+    route: Literal["html", "image"] | None = None        # 표 갈래(D18) — image 면 후속 단계가 그림으로도 다룬다
+    route_reason: str | None = None                     # photo_in_cell | failed | visual
     figure_text: str | None = None       # 그림·차트 속 인쇄 글자(D14)
     meta: dict[str, str] | None = None
     truncated: Literal["length", "repetition"] | None = None
@@ -60,7 +63,9 @@ class Page(_Model):
     keep: bool = True
     form: bool | None = None
     born_digital: bool | None = None
+    text_layer_agreement: float | None = None   # 레이어 글자 중 모델 출력에도 있는 비율(8.5)
     n_up: NUp | None = None
+    rot90_k: int | None = None           # 스캔을 세운 횟수(np.rot90 의 k) — bbox 는 시트 좌표, 위치 규칙은 세운 쪽 기준(geometry)
     blocks: list[Block] = Field(default_factory=list)
 
 

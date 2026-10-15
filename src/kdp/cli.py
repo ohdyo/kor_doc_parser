@@ -55,6 +55,10 @@ def doctor(env: Optional[Path] = EnvOpt, config: Optional[Path] = CfgOpt):
         fp = _weights_fingerprint(d, name)
         rows.append(("WARN" if fp.get("missing") else "OK", f"가중치 {name}", fp["path"]))
 
+    if s.parse.orientation == "scan_only":                # 스캔 시트 방향(설계 3.7) — 없으면 레이어 없는 시트에서 멈춘다
+        fp = _weights_fingerprint(s.env.models.doc_ori_dir, "PP-LCNet_x1_0_doc_ori")
+        rows.append(("WARN" if fp.get("missing") else "OK", "가중치 PP-LCNet_x1_0_doc_ori", fp["path"]))
+
     if s.env.vlm.backend != "native":
         rows.append(("OK" if _version("openai") else "FAIL", "openai(서버 백엔드)", f"설치본 {_version('openai')}"))
         from .engine.paddle_vl import served_models

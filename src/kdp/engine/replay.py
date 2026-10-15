@@ -15,9 +15,9 @@ class ReplayEngine:
         return read_json(self.raw_dir / "engine.json")["engine"]
 
     def run(self, pages=None, raw_dir=None):
-        for side in sorted(self.raw_dir.glob("p*.sidecar.json")):
-            stem = side.name.split(".")[0]
-            yield raw_page_from_files(read_json(self.raw_dir / f"{stem}.json"), read_json(side))
+        # page_no 숫자 순 — 이름 글자 순이면 p10000 이 p1000 과 p1001 사이에 와서 parse 와 쪽 순서가 달라진다
+        for stem in sorted((s.name.split(".")[0] for s in self.raw_dir.glob("p*.sidecar.json")), key=lambda s: int(s[1:])):
+            yield raw_page_from_files(read_json(self.raw_dir / f"{stem}.json"), read_json(self.raw_dir / f"{stem}.sidecar.json"))
 
     def close(self) -> None:
         pass
