@@ -146,13 +146,18 @@ def _read_yaml(path: Path) -> dict:
 def load_settings(env_path: str | Path | None = None, parse_path: str | Path | None = None) -> Settings:
     env_file = Path(env_path) if env_path else DEFAULT_ENV
     parse_file = Path(parse_path) if parse_path else DEFAULT_PARSE
-    if env_path and not env_file.exists():
-        raise FileNotFoundError(env_file)
-    env = Env(**_read_yaml(env_file)) if env_file.exists() else Env()
-    parse = ParseConfig(**_read_yaml(parse_file))
+    if not env_file.exists():                      # 없으면 조용히 CPU 로 돌지 않게 바로 멈춘다
+        raise FileNotFoundError(f"{env_file} 이 없다 — 머신별 값(장치·VLM 서버 등)을 이 파일에 둔다")
+    env = Env(**_read_yaml(env_file))
+    raw = _read_yaml(parse_file)
+    parse = ParseConfig(**raw)
+    # 이 파일이 paddlex_config 를 직접 정했을 때만 이 파일 기준, 아니면 기본 설정 폴더 기준
+    base = parse_file.parent if "paddlex_config" in (raw.get("paddle_vl") or {}) else DEFAULT_PARSE.parent
     px = Path(parse.paddle_vl.paddlex_config)
     if not px.is_absolute():
-        px = (parse_file.parent / px).resolve()
+        px = (base / px).resolve()
+    if not px.exists():
+        raise FileNotFoundError(px)
     return Settings(env=env, parse=parse, paddlex_config_path=px)
 
 

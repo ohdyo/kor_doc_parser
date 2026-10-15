@@ -1,14 +1,17 @@
 """1단계 엔진: 설치본 PaddleOCR-VL-1.6 + 훅(설계 3장)."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+import urllib.request
 from dataclasses import asdict
 from functools import lru_cache
 from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 from ..config import Settings, apply_env, digest
 from ..io.ids import block_id
@@ -17,6 +20,7 @@ from .base import PageInput, RawPage, page_stem, raw_page_from_files
 
 CODE_VERSION = "1"
 CROP_LABELS = {"table", "chart", "display_formula"}   # PaddleX 가 크롭을 안 주는 것 — 렌더에서 직접 자른다
+PIPELINE_NAMES = {"v1": "PaddleOCR-VL", "v1.5": "PaddleOCR-VL-1.5", "v1.6": "PaddleOCR-VL-1.6"}
 
 
 class EngineError(RuntimeError):
@@ -42,6 +46,38 @@ def _wrapper_class():
     return KdpOCRVL
 
 
+def wrapper_kwargs(settings: Settings) -> dict:
+    env, p = settings.env, settings.parse.paddle_vl
+    kw = dict(
+        pipeline_version=p.pipeline_version,
+        paddlex_config=str(settings.paddlex_config_path),
+        device=env.device,
+        vl_rec_backend=env.vlm.backend,
+        layout_detection_model_dir=env.models.layout_dir,
+        vl_rec_model_dir=env.models.vlm_dir,
+        use_doc_orientation_classify=False,     # 방향은 prep 에서 직접(설계 3.7)
+        use_doc_unwarping=False,
+        use_chart_recognition=p.use_chart_recognition,
+        use_seal_recognition=p.use_seal_recognition,
+        use_ocr_for_image_block=p.use_ocr_for_image_block,
+    )
+    if env.vlm.backend != "native":
+        kw.update(vl_rec_server_url=env.vlm.server_url,
+                  vl_rec_api_model_name=env.vlm.api_model_name,
+                  vl_rec_api_key=env.vlm.api_key,
+                  vl_rec_max_concurrency=env.vlm.max_concurrency)
+    return kw
+
+
+def served_models(url: str | None, api_key: str | None) -> dict:
+    """VLM 서버가 올린 모델 — vLLM 은 root(가중치 경로)·max_model_len 도 준다."""
+    req = urllib.request.Request((url or "").rstrip("/") + "/models",
+                                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        data = json.load(r)["data"]
+    return {m["id"]: {"root": m.get("root"), "max_model_len": m.get("max_model_len")} for m in data}
+
+
 def ink_ratio(img: np.ndarray) -> float:
     return round(float((img[::4, ::4].min(axis=2) < 200).mean()), 4)
 
@@ -54,10 +90,15 @@ def _crop(img: np.ndarray, box) -> np.ndarray | None:
     return img[y1:y2, x1:x2] if x2 > x1 and y2 > y1 else None
 
 
+def _inside(box, outer) -> bool:
+    return box[0] >= outer[0] and box[1] >= outer[1] and box[2] <= outer[2] and box[3] <= outer[3]
+
+
 def _weights_fingerprint(model_dir: str | None, model_name: str) -> dict:
     """가중치 판 — 경로·파일 크기·수정 시각(대용량이라 내용 해시는 하지 않는다)."""
-    base = Path(os.environ.get("PADDLE_PDX_CACHE_HOME", Path.home() / ".paddlex"))
-    d = Path(model_dir) if model_dir else base / "official_models" / model_name
+    base = Path(os.environ.get("PADDLE_PDX_CACHE_HOME", Path.home() / ".paddlex")) / "official_models"
+    candidates = [Path(model_dir)] if model_dir else [base / model_name, base / model_name.rsplit("-", 1)[0]]
+    d = next((c for c in candidates if c.is_dir()), candidates[0])
     if not d.is_dir():
         return {"path": str(d), "missing": True}
     files = sorted((p.name, p.stat().st_size, int(p.stat().st_mtime)) for p in d.iterdir() if p.is_file())
@@ -65,60 +106,67 @@ def _weights_fingerprint(model_dir: str | None, model_name: str) -> dict:
 
 
 class PaddleVLEngine:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, ocr=None):
         apply_env(settings.env)
         env, p = settings.env, settings.parse.paddle_vl
-        kw = dict(
-            pipeline_version=p.pipeline_version,
-            paddlex_config=str(settings.paddlex_config_path),
-            device=env.device,
-            vl_rec_backend=env.vlm.backend,
-            layout_detection_model_dir=env.models.layout_dir,
-            vl_rec_model_dir=env.models.vlm_dir,
-            use_doc_orientation_classify=False,     # 방향은 prep 에서 직접(설계 3.7)
-            use_doc_unwarping=False,
-            use_chart_recognition=p.use_chart_recognition,
-            use_seal_recognition=p.use_seal_recognition,
-            use_ocr_for_image_block=p.use_ocr_for_image_block,
-        )
-        if env.vlm.backend != "native":
-            kw.update(vl_rec_server_url=env.vlm.server_url,
-                      vl_rec_api_model_name=env.vlm.api_model_name,
-                      vl_rec_api_key=env.vlm.api_key,
-                      vl_rec_max_concurrency=env.vlm.max_concurrency)
+        self._settings = settings
+        self._ocr = ocr or _wrapper_class()(**wrapper_kwargs(settings))
         from .hooks import install_response_hook
 
-        self._ocr = _wrapper_class()(**kw)
         self.hooked = install_response_hook(self._ocr.paddlex_pipeline.vl_rec_model)
-        self._settings = settings
+        cfg = self._ocr._merged_paddlex_config
+        want = PIPELINE_NAMES.get(p.pipeline_version)
+        if want and cfg.get("pipeline_name") != want:      # paddlex_config 를 주면 pipeline_version 은 무시되므로 맞는지 본다
+            raise EngineError(f"pipeline_version {p.pipeline_version} 과 {settings.paddlex_config_path.name} 의 "
+                              f"pipeline_name {cfg.get('pipeline_name')} 이 다르다")
+        self._served = None
+        if env.vlm.backend != "native":
+            try:
+                served = served_models(env.vlm.server_url, env.vlm.api_key)
+            except OSError as e:
+                raise EngineError(f"VLM 서버에 연결할 수 없다: {env.vlm.server_url} — {e}") from e
+            if env.vlm.api_model_name not in served:
+                raise EngineError(f"VLM 서버에 '{env.vlm.api_model_name}' 이 없다: {list(served)}")
+            self._served = served[env.vlm.api_model_name]
         self._snapshot = self._config_snapshot()
 
     def _config_snapshot(self) -> str:
+        """병합된 PaddleX 설정. 서버 주소·동시성·키는 출력과 상관없고 밖에 남으면 안 되므로 뺀다."""
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "paddlex.yaml"
             self._ocr.export_paddlex_config_to_yaml(path)
-            return path.read_text(encoding="utf-8")
+            cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        genai = cfg.get("SubModules", {}).get("VLRecognition", {}).get("genai_config") or {}
+        genai.pop("server_url", None)
+        genai.pop("max_concurrency", None)
+        (genai.get("client_kwargs") or {}).pop("api_key", None)
+        return yaml.safe_dump(cfg, allow_unicode=True, sort_keys=True)
 
     def config_snapshot(self) -> str:
         return self._snapshot
 
     def describe(self) -> dict:
-        env, p = self._settings.env, self._settings.parse.paddle_vl
+        env = self._settings.env
+        cfg = self._ocr._merged_paddlex_config
+        layout = cfg["SubModules"]["LayoutDetection"]["model_name"]
+        vlm = cfg["SubModules"]["VLRecognition"]["model_name"]
+        native = env.vlm.backend == "native"
         return {
             "name": "paddle_vl",
             "code_version": CODE_VERSION,
-            "pipeline_version": p.pipeline_version,
-            "layout_model": "PP-DocLayoutV3",
-            "vlm": env.vlm.api_model_name if env.vlm.backend != "native" else "PaddleOCR-VL-1.6-0.9B",
+            "pipeline": cfg.get("pipeline_name"),
+            "layout_model": layout,
+            "vlm": vlm if native else env.vlm.api_model_name,
             "backend": env.vlm.backend,
             "response_hook": self.hooked,
             "paddleocr": version("paddleocr"),
             "paddlex": version("paddlex"),
             "paddlex_config": digest(self._snapshot),
             "weights": {
-                "layout": _weights_fingerprint(env.models.layout_dir, "PP-DocLayoutV3"),
-                "vlm": (_weights_fingerprint(env.models.vlm_dir, "PaddleOCR-VL-1.6")
-                        if env.vlm.backend == "native" else {"served": env.vlm.api_model_name}),
+                "layout": _weights_fingerprint(env.models.layout_dir, layout),
+                # 서버 백엔드도 서버가 읽는 폴더(models.vlm_dir)를 적으면 그 판이 들어간다 — 서빙 이름만으로는 가중치 교체를 모른다
+                "vlm": _weights_fingerprint(env.models.vlm_dir, vlm) if native or env.models.vlm_dir else None,
+                "served": self._served,
             },
         }
 
@@ -161,13 +209,18 @@ class PaddleVLEngine:
                 write_png(imgs_dir / name, crop)
             meta.append({"idx": i, "vlm": getattr(b, "kdp", None),
                          "merged_into": getattr(b, "kdp_merged_into", None), "img": name})
+
+        # 표 안 그림은 블록에서 빠진다 — HTML 에 다시 나오지 않아도 크롭은 모두 남긴다(설계 3.6)
+        tables = [b for b in blocks if b.label == "table"]
+        html = " ".join(b.content or "" for b in tables)
         table_imgs = {}
-        tables = " ".join(b.content or "" for b in blocks if b.label == "table")
         for k, d in enumerate(res.get("imgs_in_doc") or []):
-            if d["path"] in tables:
+            if any(_inside(d["coordinate"], t.bbox) for t in tables):
                 name = f"p{inp.page_no}.t{k + 1:02d}.png"
                 write_png(imgs_dir / name, d["img"])
-                table_imgs[d["path"]] = name
+                table_imgs[d["path"]] = {"name": name, "label": d["label"],
+                                         "box": [int(v) for v in d["coordinate"]], "in_html": d["path"] in html}
+
         sidecar = {"input": asdict(inp), "width": int(img.shape[1]), "height": int(img.shape[0]),
                    "ink_ratio": ink_ratio(img), "blocks": meta, "table_imgs": table_imgs}
         stem = page_stem(inp.page_no)

@@ -1,0 +1,341 @@
+"""비교군 시험 — 같은 PDF 를 비교 파서로 돌리고, 정답(좌표·라벨)과 텍스트 레이어로 같은 지표를 잰다(기획서 8.1 일부).
+
+    python eval/compare.py test.pdf --golden eval/golden/test_pdf.yaml
+
+비교군 출력은 out/<문서 해시>/compare/ 에 두고 다시 쓴다(--rerun 이면 다시 돌린다). 보고에는 개수·비율만 낸다.
+"""
+from __future__ import annotations
+
+import argparse
+import html as htmllib
+import re
+import sys
+import time
+import unicodedata
+from collections import Counter
+from pathlib import Path
+
+import numpy as np
+import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_c
+import yaml
+
+from kdp.config import apply_env, load_settings
+from kdp.convert import FIGURE_LABELS
+from kdp.io.ids import doc_dirname, doc_id_of
+from kdp.io.pdf import text_chars
+from kdp.io.render import user_box_to_display
+from kdp.io.write import read_json, write_json
+
+RUNS = ("textlayer", "docling", "paddle_default", "kdp")
+NAMES = {"textlayer": "텍스트 레이어", "docling": "docling", "paddle_default": "PaddleOCR-VL 기본", "kdp": "kdp"}
+MIN_SEG = 4                      # 이보다 짧은 레이어 조각은 시험하지 않는다
+_TAG = re.compile(r"<[^>]+>")
+_SKIP = re.compile(r"[\s|#*_`\-–•·ㆍᆞ▪▫◦○●■□◆◇▶►]+")    # 공백·마크업·글머리표(파서마다 따로 떼어 둔다)
+_DOTS = re.compile(r"\.{2,}")                              # 목차 점선
+_QUOTES = str.maketrans({"‘": "'", "’": "'", "‚": "'", "‛": "'", "“": '"', "”": '"', "„": '"', "‟": '"'})   # 표기 차이
+
+
+def norm(s: str) -> str:
+    return _DOTS.sub("", _SKIP.sub("", unicodedata.normalize("NFKC", s or "").translate(_QUOTES)))
+
+
+def strip_html(s: str) -> str:
+    return htmllib.unescape(_TAG.sub(" ", s))
+
+
+def html_grid(s: str) -> list[int] | None:
+    """표 HTML 의 행·열 수 — rowspan·colspan 을 펼친 격자 기준."""
+    occ = set()
+    rows = re.split(r"<tr[\s>]", s, flags=re.I)[1:]
+    for r, row in enumerate(rows):
+        c = 0
+        for attrs in re.findall(r"<t[dh]([^>]*)>", row, flags=re.I):
+            rs = int((re.search(r'rowspan="?(\d+)', attrs) or [0, 1])[1])
+            cs = int((re.search(r'colspan="?(\d+)', attrs) or [0, 1])[1])
+            while (r, c) in occ:
+                c += 1
+            occ.update((r + i, c + j) for i in range(rs) for j in range(cs))
+            c += cs
+    return [len(rows), max(c for _, c in occ) + 1] if occ else None
+
+
+def _blk(kind, bbox, body, text, label, html=None) -> dict:
+    return {"kind": kind, "bbox": [round(v, 1) for v in bbox] if bbox else None, "body": bool(body), "label": label,
+            "text": strip_html(html) if html else (text or ""), "grid": html_grid(html) if html else None}
+
+
+# ---- 비교군 실행 ----
+
+def run_textlayer(pdf: Path, settings) -> dict:
+    """모델 없음 — PDF 텍스트 레이어를 쪽마다 그대로."""
+    t = time.perf_counter()
+    doc = pdfium.PdfDocument(str(pdf))
+    pages = {}
+    for i in range(len(doc)):
+        w, h = doc[i].get_size()
+        pages[i + 1] = [_blk("text", [0, 0, w, h], True, "".join(c["c"] for c in text_chars(doc[i])), "page")]
+    doc.close()
+    return {"seconds": time.perf_counter() - t, "pages": pages}
+
+
+def run_docling(pdf: Path, settings) -> dict:
+    """docling 기본 파이프라인, OCR 끔(기획서 A.3 과 같은 설정). furniture 층은 본문이 아니다."""
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling_core.types.doc import ContentLayer, PictureItem, TableItem
+
+    t = time.perf_counter()
+    opts = PdfPipelineOptions()
+    opts.do_ocr = False
+    doc = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}).convert(pdf).document
+    pages = {}
+    for item, _ in doc.iterate_items(included_content_layers={ContentLayer.BODY, ContentLayer.FURNITURE}):
+        if not item.prov:
+            continue
+        prov = item.prov[0]
+        box = list(prov.bbox.to_top_left_origin(doc.pages[prov.page_no].size.height).as_tuple())
+        body = item.content_layer == ContentLayer.BODY
+        if isinstance(item, TableItem):
+            b = _blk("table", box, body, " ".join(c.text for c in item.data.table_cells), item.label.value)
+            b["grid"] = [item.data.num_rows, item.data.num_cols]
+        elif isinstance(item, PictureItem):
+            b = _blk("figure", box, body, "", item.label.value)
+        else:
+            b = _blk("text", box, body, getattr(item, "text", ""), item.label.value)
+        pages.setdefault(prov.page_no, []).append(b)
+    return {"seconds": time.perf_counter() - t, "pages": pages}
+
+
+def run_paddle_default(pdf: Path, settings) -> dict:
+    """PaddleOCR-VL 기본 설정 그대로 — 우리 설정 사본·훅·규칙 없이(장치·VLM 서버만 env.yaml). 본문 = 기본 마크다운에 들어가는 블록."""
+    apply_env(settings.env)
+    from paddleocr import PaddleOCRVL
+
+    env = settings.env
+    kw = {"pipeline_version": settings.parse.paddle_vl.pipeline_version, "device": env.device}
+    if env.vlm.backend != "native":
+        kw.update(vl_rec_backend=env.vlm.backend, vl_rec_server_url=env.vlm.server_url,
+                  vl_rec_api_model_name=env.vlm.api_model_name, vl_rec_api_key=env.vlm.api_key)
+    t = time.perf_counter()
+    ocr = PaddleOCRVL(**kw)
+    ignore = set(ocr._merged_paddlex_config.get("markdown_ignore_labels") or [])
+    results = list(ocr.predict(str(pdf)))
+    seconds = time.perf_counter() - t
+    doc = pdfium.PdfDocument(str(pdf))
+    pages = {}
+    for i, r in enumerate(results):
+        res = r.json.get("res", r.json)
+        s = res["width"] / doc[i].get_size()[0]
+        blocks = []
+        for b in res["parsing_res_list"]:
+            label, content = b["block_label"], b.get("block_content") or ""
+            box = [v / s for v in b["block_bbox"]]
+            kind = "table" if label == "table" else "figure" if label in FIGURE_LABELS else "text"
+            blocks.append(_blk(kind, box, label not in ignore, content, label, html=content if kind == "table" else None))
+        pages[i + 1] = blocks
+    doc.close()
+    return {"seconds": seconds, "pages": pages}
+
+
+def load_kdp(doc_dir: Path) -> dict:
+    d = read_json(doc_dir / "document.json")
+    pages = {}
+    for p in d["pages"]:
+        pages[p["page_no"]] = [
+            _blk("table" if b["type"] == "table" else "figure" if b["type"] in FIGURE_LABELS else "text", b["bbox"],
+                 p["keep"] and b["keep"], b.get("text") or b.get("figure_text"), b["type"], html=b.get("html"))
+            for b in p["blocks"]]
+    return {"seconds": read_json(doc_dir / "raw" / "engine.json").get("seconds"), "pages": pages}
+
+
+RUNNERS = {"textlayer": run_textlayer, "docling": run_docling, "paddle_default": run_paddle_default}
+
+
+# ---- 정답·지표 ----
+
+def segments(pdf: Path) -> dict[int, list[tuple[str, list]]]:
+    """쪽마다 텍스트 레이어 조각 — 레이어에 적힌 순서대로 잇다가 줄이 바뀌거나, 뒤로 가거나, 넓게 떨어지거나,
+    세로 테두리선(표 칸 경계)을 넘으면 끊는다."""
+    doc = pdfium.PdfDocument(str(pdf))
+    out = {}
+    for i in range(len(doc)):
+        pg = doc[i]
+        bb, rot = pg.get_bbox(), pg.get_rotation()
+        cs = [(c["c"], user_box_to_display(c["box"], bb, rot)) for c in text_chars(pg)
+              if not c["gen"] and not c["c"].isspace()]
+        rules = []
+        for o in pg.get_objects(max_depth=4):
+            if o.type == pdfium_c.FPDF_PAGEOBJ_PATH:
+                l, t, r, b = user_box_to_display(o.get_bounds(), bb, rot)
+                if r - l < 2.5 and b - t > 5:
+                    rules.append(((l + r) / 2, t, b))
+        out[i + 1] = _segments(cs, rules)
+    doc.close()
+    return out
+
+
+def _segments(cs, rules=()) -> list[tuple[str, list]]:
+    # 줄 높이는 보통 글자(한글·숫자·영문)로 잡는다 — 마침표·쉼표는 아래쪽, 따옴표는 위쪽에 붙어 있다
+    segs, cur, top, bot, core = [], [], 0.0, 0.0, False
+    for ch, b in cs:
+        if cur:
+            h, prev = b[3] - b[1], cur[-1][1]
+            ov = min(bot, b[3]) - max(top, b[1])
+            same_line = ov >= 0.5 * min(h, bot - top) if h > 0.5 else top <= (b[1] + b[3]) / 2 <= bot
+            gap, line_h, cy = b[0] - prev[2], max(bot - top, h), (b[1] + b[3]) / 2
+            ruled = any(prev[2] - 1 <= x <= b[0] + 1 and y0 <= cy <= y1 for x, y0, y1 in rules)
+            if not same_line or not -line_h < gap <= 2 * line_h or ruled:
+                segs.append(cur)
+                cur = []
+        if not cur:
+            top, bot, core = b[1], b[3], ch.isalnum()
+        elif ch.isalnum():
+            top, bot = (min(top, b[1]), max(bot, b[3])) if core else (b[1], b[3])
+            core = True
+        cur.append((ch, b))
+    if cur:
+        segs.append(cur)
+    return [(norm("".join(c for c, _ in s)),
+             [min(b[0] for _, b in s), min(b[1] for _, b in s), max(b[2] for _, b in s), max(b[3] for _, b in s)])
+            for s in segs]
+
+
+def _best_dist(p: str, t: str) -> int:
+    """p 를 t 의 어느 부분 문자열과 맞출 때 최소 편집 거리."""
+    tt = np.frombuffer(t.encode("utf-32-le"), dtype=np.uint32)
+    ar = np.arange(len(t) + 1)
+    prev = np.zeros(len(t) + 1, dtype=np.int64)
+    for i, ch in enumerate(p, 1):
+        cur = np.empty_like(prev)
+        cur[0] = i
+        cur[1:] = np.minimum(prev[:-1] + (tt != ord(ch)), prev[1:] + 1)
+        prev = np.minimum.accumulate(cur - ar) + ar
+    return int(prev.min())
+
+
+def present(seg: str, text: str) -> bool:
+    """조각이 출력에 있나 — 10자당 1자까지 틀려도 있음(10자 미만은 정확히)."""
+    if seg in text:
+        return True
+    k = len(seg) // 10
+    return bool(k and text) and _best_dist(seg, text) <= k
+
+
+def _area(b) -> float:
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+
+def _inter(a, b) -> float:
+    return _area([max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])])
+
+
+def _iou(a, b) -> float:
+    i = _inter(a, b)
+    return i / (_area(a) + _area(b) - i) if i else 0.0
+
+
+def _center_in(box, regions) -> bool:
+    x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    return any(r[0] <= x <= r[2] and r[1] <= y <= r[3] for r in regions)
+
+
+def evaluate(segs: dict, golden: dict, run: dict) -> dict:
+    pages = {int(k): v for k, v in run["pages"].items()}
+    junk, tables, figs = golden.get("junk", []), golden.get("tables", []), golden.get("figures", [])
+    body = {p: norm("".join(b["text"] for b in pages.get(p, []) if b["body"])) for p in golden["pages"]}
+    text = {"normal": [0, 0]}                       # 본문 쪽: [출력에 있는 조각, 전체 조각]
+    leak = {"cover": [0, 0], "toc": [0, 0]}         # 표지·목차 쪽: [본문에 남은 글자, 전체 글자]
+    for p, cls in golden["pages"].items():
+        regions = [j["bbox"] for j in junk if j["page"] == p]
+        mine = [s for s, box in segs.get(p, []) if not _center_in(box, regions)]
+        if cls == "normal":
+            tests = [s for s in mine if len(s) >= MIN_SEG]
+            text["normal"][0] += sum(present(s, body[p]) for s in tests)
+            text["normal"][1] += len(tests)
+        elif cls in leak:
+            ref = Counter("".join(mine))
+            leak[cls][0] += sum((ref & Counter(body[p])).values())
+            leak[cls][1] += sum(ref.values())
+    removed = {}
+    for j in junk:
+        kept = any(b["body"] and b["bbox"] and _inter(j["bbox"], b["bbox"]) >= 0.5 * _area(j["bbox"])
+                   for b in pages.get(j["page"], []))
+        r = removed.setdefault(j["kind"], [0, 0])
+        r[0] += not kept
+        r[1] += 1
+    det = grid = 0
+    for g in tables:
+        cands = [b for b in pages.get(g["page"], [])
+                 if b["body"] and b["kind"] == "table" and _iou(b["bbox"], g["bbox"]) >= 0.5]
+        det += bool(cands)
+        grid += any(b["grid"] == [g["rows"], g["cols"]] for b in cands)
+    fig_chars = sum(len(norm(b["text"])) for f in figs for b in pages.get(f["page"], [])
+                    if b["body"] and b["bbox"] and _inter(f["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"]))
+    return {"seconds": run.get("seconds"), "n_pages": len(golden["pages"]), "text": text, "leak": leak, "junk_removed": removed,
+            "tables": {"detected": det, "grid_ok": grid, "total": len(tables)}, "figure_chars": fig_chars}
+
+
+# ---- 보고 ----
+
+def _frac(v) -> str:
+    return f"{v[0]}/{v[1]} ({100 * v[0] / v[1]:.1f}%)" if v[1] else "—"
+
+
+def render(report: dict) -> str:
+    names = list(report)
+    rows = [("본문 글자 조각이 출력에 있음", lambda r: _frac(r["text"]["normal"])),
+            ("표지 글자가 본문에 남음", lambda r: _frac(r["leak"]["cover"])),
+            ("목차 글자가 본문에 남음", lambda r: _frac(r["leak"]["toc"]))]
+    kinds = sorted({k for r in report.values() for k in r["junk_removed"]})
+    rows += [(f"잡요소 제거 — {k}", lambda r, k=k: _frac(r["junk_removed"].get(k, [0, 0]))) for k in kinds]
+    rows += [("표 검출(IoU≥0.5)", lambda r: _frac([r["tables"]["detected"], r["tables"]["total"]])),
+             ("표 행·열 일치", lambda r: _frac([r["tables"]["grid_ok"], r["tables"]["total"]])),
+             ("그림 영역에서 읽은 글자 수", lambda r: str(r["figure_chars"])),
+             ("처리 시간(쪽당)", lambda r: f"{r['seconds']:.0f}초 ({r['seconds'] / r['n_pages']:.1f}초)"
+              if r["seconds"] is not None else "—")]
+    out = ["| 지표 | " + " | ".join(NAMES.get(n, n) for n in names) + " |", "|---" * (len(names) + 1) + "|"]
+    out += ["| " + label + " | " + " | ".join(fn(report[n]) for n in names) + " |" for label, fn in rows]
+    return "\n".join(out)
+
+
+def main(argv=None) -> None:
+    ap = argparse.ArgumentParser(description="비교군 시험(개수·비율만 출력)")
+    ap.add_argument("pdf")
+    ap.add_argument("--golden", required=True)
+    ap.add_argument("--runs", default=",".join(RUNS))
+    ap.add_argument("-o", "--out", default=None)
+    ap.add_argument("--rerun", action="store_true")
+    a = ap.parse_args(argv)
+    settings = load_settings()
+    pdf = Path(a.pdf).resolve()
+    doc_id = doc_id_of(pdf.read_bytes())
+    golden = yaml.safe_load(Path(a.golden).read_text(encoding="utf-8"))
+    if golden["doc_id"] != doc_id:
+        sys.exit("정답 파일의 doc_id 가 PDF 와 다르다")
+    doc_dir = Path(a.out or settings.env.paths.out_dir) / doc_dirname(doc_id)
+    segs = segments(pdf)
+    report = {}
+    for name in a.runs.split(","):
+        if name == "kdp":
+            if not (doc_dir / "document.json").exists():
+                print("kdp 출력 없음 — 먼저 kdp parse", file=sys.stderr)
+                continue
+            run = load_kdp(doc_dir)
+        else:
+            cache = doc_dir / "compare" / f"{name}.json"
+            if a.rerun or not cache.exists():
+                try:
+                    write_json(cache, RUNNERS[name](pdf, settings))
+                except ImportError as e:            # docling 은 파서 env 밖에서 돌린다(설계 9장) — 결과 파일만 있으면 된다
+                    print(f"{name} 건너뜀({e.name} 없음) — 설치된 env 에서 --runs {name} 으로 먼저 돌린다", file=sys.stderr)
+                    continue
+            run = read_json(cache)
+        report[name] = evaluate(segs, golden, run)
+    write_json(doc_dir / "compare" / "report.json", report, indent=1)
+    print(render(report))
+
+
+if __name__ == "__main__":
+    main()

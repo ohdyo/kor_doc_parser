@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from kdp.config import ParseConfig, assemble_hash, engine_hash, load_settings
+from kdp.config import DEFAULT_PARSE, ParseConfig, assemble_hash, engine_hash, load_settings
 
 
 def test_defaults_load(settings):
@@ -28,3 +28,11 @@ def test_hash_split(settings):
 def test_explicit_missing_env_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_settings(tmp_path / "nope.yaml")
+
+
+def test_partial_override_keeps_default_paddlex_config(tmp_path):
+    f = tmp_path / "hi_dpi.yaml"
+    f.write_text("render: {dpi: 200}\n", encoding="utf-8")
+    s = load_settings(parse_path=f)
+    assert s.parse.render.dpi == 200
+    assert s.paddlex_config_path == (DEFAULT_PARSE.parent / "paddlex_vl16.yaml").resolve()

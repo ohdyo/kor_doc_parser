@@ -1,0 +1,37 @@
+# test.pdf 정답 — 좌표(표시 pt, 왼쪽 위 원점)·종류·개수만 적는다(글자 없음). 글자 정답은 PDF 텍스트 레이어에서 뽑는다.
+# 2026-10-14 쪽 그림을 보고 확정. 표 행·열은 테두리 선을 셌다(그림으로 된 표는 그림 속 선).
+doc_id: "sha256:c7d483e0a66b34a3f3b34d2c20d88b4ff7c3de1a6c5c91f48f3c82e4ea9d5724"
+pages: {1: cover, 2: toc, 3: toc, 4: normal, 5: normal, 6: normal}
+junk:
+  # 머리말 — 왼쪽 문서 제목 줄, 오른쪽 장 제목
+  - {page: 2, kind: 머리말, bbox: [78, 59, 392, 70]}
+  - {page: 2, kind: 머리말, bbox: [519, 55, 548, 67]}
+  - {page: 3, kind: 머리말, bbox: [78, 59, 392, 70]}
+  - {page: 3, kind: 머리말, bbox: [519, 55, 548, 67]}
+  - {page: 4, kind: 머리말, bbox: [79, 57, 393, 68]}
+  - {page: 4, kind: 머리말, bbox: [454, 55, 548, 67]}
+  - {page: 5, kind: 머리말, bbox: [79, 57, 393, 68]}
+  - {page: 6, kind: 머리말, bbox: [79, 57, 393, 68]}
+  # 쪽번호
+  - {page: 2, kind: 쪽번호, bbox: [290, 781, 305, 791]}
+  - {page: 3, kind: 쪽번호, bbox: [289, 781, 306, 791]}
+  - {page: 4, kind: 쪽번호, bbox: [288, 782, 307, 791]}
+  - {page: 5, kind: 쪽번호, bbox: [285, 781, 310, 790]}
+  - {page: 6, kind: 쪽번호, bbox: [285, 781, 310, 791]}
+  # 꼬리말 로고 — 왼쪽·오른쪽
+  - {page: 2, kind: 로고, bbox: [76, 779, 141, 799]}
+  - {page: 2, kind: 로고, bbox: [496, 778, 543, 791]}
+  - {page: 3, kind: 로고, bbox: [76, 779, 141, 799]}
+  - {page: 3, kind: 로고, bbox: [496, 778, 543, 791]}
+  - {page: 4, kind: 로고, bbox: [76, 779, 141, 799]}
+  - {page: 4, kind: 로고, bbox: [496, 778, 543, 791]}
+  - {page: 5, kind: 로고, bbox: [76, 779, 141, 799]}
+  - {page: 5, kind: 로고, bbox: [496, 778, 543, 791]}
+  - {page: 6, kind: 로고, bbox: [76, 779, 141, 799]}
+  - {page: 6, kind: 로고, bbox: [496, 778, 543, 791]}
+tables:
+  - {page: 4, bbox: [134, 105, 546, 435], rows: 3, cols: 2, raster: true}   # 그림으로 된 표
+  - {page: 5, bbox: [85, 439, 550, 724], rows: 5, cols: 3}
+  - {page: 6, bbox: [85, 149, 550, 745], rows: 11, cols: 3}
+figures:
+  - {page: 4, bbox: [134, 105, 546, 435]}

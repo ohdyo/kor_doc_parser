@@ -51,17 +51,25 @@ def open_pdf(data: bytes) -> pdfium.PdfDocument:
     return doc
 
 
+def _optional(fn, default=None):
+    """책갈피·Info 문자열은 참고용이다 — 깨진 UTF-16 이 있어도 문서를 실패시키지 않는다."""
+    try:
+        return fn()
+    except UnicodeDecodeError:
+        return default
+
+
 def read_info(doc: pdfium.PdfDocument, doc_id: str, path: str) -> PdfInfo:
     with PDFIUM_LOCK:
-        meta = doc.get_metadata_dict(skip_empty=True)
+        meta = _optional(lambda: doc.get_metadata_dict(skip_empty=True), {})
         toc = []
         for item in doc.get_toc():
+            title = _optional(item.get_title)
+            if title is None:
+                continue
             dest = item.get_dest()
-            toc.append({
-                "level": item.level,
-                "title": item.get_title(),
-                "page": dest.get_index() + 1 if dest is not None and dest.get_index() is not None else None,
-            })
+            index = dest.get_index() if dest is not None else None
+            toc.append({"level": item.level, "title": title, "page": index + 1 if index is not None else None})
         pages = []
         for i in range(len(doc)):
             page = doc[i]
@@ -82,21 +90,32 @@ def read_info(doc: pdfium.PdfDocument, doc_id: str, path: str) -> PdfInfo:
                    producer=meta.get("Producer"), toc=toc, pages=pages)
 
 
+def merge_surrogates(codes: list[int]) -> list[tuple[int, int]]:
+    """PDFium 은 BMP 밖 글자(이모지·수식 문자·확장 한자)를 UTF-16 서로게이트 둘로 준다 — (코드, 첫 단위 순번)으로 합친다.
+    짝 없는 서로게이트는 U+FFFD 로 바꾼다(그대로 두면 UTF-8 로 쓸 수 없다)."""
+    out, i = [], 0
+    while i < len(codes):
+        code, step = codes[i], 1
+        if 0xD800 <= code < 0xDC00 and i + 1 < len(codes) and 0xDC00 <= codes[i + 1] < 0xE000:
+            code, step = 0x10000 + ((code - 0xD800) << 10) + (codes[i + 1] - 0xDC00), 2
+        elif 0xD800 <= code < 0xE000:
+            code = 0xFFFD
+        if code:
+            out.append((code, i))
+        i += step
+    return out
+
+
 def text_chars(page: pdfium.PdfPage) -> list[dict]:
     """글자마다 {c, box(l,b,r,t — 회전 전 사용자 공간), gen(PDFium 이 끼워 넣은 문자)}."""
-    out = []
     with PDFIUM_LOCK:
         tp = page.get_textpage()
         try:
-            for i in range(tp.count_chars()):
-                code = pdfium_c.FPDFText_GetUnicode(tp, i)
-                if code == 0:
-                    continue
-                out.append({
-                    "c": chr(code),
-                    "box": [round(v, 2) for v in tp.get_charbox(i)],
-                    "gen": pdfium_c.FPDFText_IsGenerated(tp, i) == 1,
-                })
+            codes = [pdfium_c.FPDFText_GetUnicode(tp, i) for i in range(tp.count_chars())]
+            return [{
+                "c": chr(code),
+                "box": [round(v, 2) for v in tp.get_charbox(i)],
+                "gen": pdfium_c.FPDFText_IsGenerated(tp, i) == 1,
+            } for code, i in merge_surrogates(codes)]
         finally:
             tp.close()
-    return out

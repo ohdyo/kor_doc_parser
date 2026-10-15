@@ -40,7 +40,7 @@ class RawPage:
     height: int
     ink_ratio: float
     blocks: list[RawBlock]
-    table_imgs: dict[str, str] = field(default_factory=dict)   # 표 HTML 안 PaddleX 그림 경로 → raw/imgs 이름
+    table_imgs: dict[str, dict] = field(default_factory=dict)  # 표 안 그림: PaddleX 경로 → {name, label, box, in_html}
 
 
 class Engine(Protocol):

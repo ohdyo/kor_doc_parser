@@ -1,5 +1,6 @@
 """설치본 PaddleX 계약 — 가짜 VLM 서버·가짜 검출기로 훅 A·B, 오류 격리, 배열 입력(큐 켬)을 확인한다.
 paddlex 버전을 올리면 이 테스트부터 깨진다."""
+import socket
 from types import SimpleNamespace
 
 import numpy as np
@@ -44,17 +45,24 @@ def _pages(n, paint=()):
     return out
 
 
-def _run(respond, boxes_for, pages):
+def _closed_port_url():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{s.getsockname()[1]}/v1"
+
+
+def _run(respond, boxes_for, pages, ocr_images=False, url=None):
     with FakeVLM(respond) as vlm:
         pred = paddlex.create_predictor(
             model_name="PaddleOCR-VL-1.6-0.9B", batch_size=-1,
-            genai_config={"backend": "vllm-server", "server_url": vlm.url,
+            genai_config={"backend": "vllm-server", "server_url": url or vlm.url,
                           "client_kwargs": {"model_name": "served-name", "max_retries": 0}})
         assert install_response_hook(pred)
         p = KdpPipeline(config={}, initial_predictor=False)
         p.use_doc_preprocessor, p.use_layout_detection = False, True
         p.layout_det_model, p.vl_rec_model = FakeLayout(boxes_for), pred
-        p.use_chart_recognition = p.use_seal_recognition = p.use_ocr_for_image_block = False
+        p.use_chart_recognition = p.use_seal_recognition = False
+        p.use_ocr_for_image_block = ocr_images
         p.format_block_content = False
         p.batch_sampler, p.img_reader, p.crop_by_boxes = ImageBatchSampler(batch_size=64), ReadImage("BGR"), CropByBoxes()
         p.use_queues, p.merge_layout_blocks, p.layout_prep_cpu_workers = True, True, 0
@@ -103,8 +111,43 @@ def test_server_error_stops_document():
     def respond(q, im):
         return (500, "boom", "stop") if im.size[0] == 611 else (200, "정상", "stop")
 
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="vlm' worker: Error code: 500"):
         _run(respond, _one_text, _pages(4))
+
+
+def test_connection_error_stops_document():
+    with pytest.raises(RuntimeError, match="vlm' worker"):
+        _run(lambda q, im: (200, "정상", "stop"), _one_text, _pages(2), url=_closed_port_url())
+
+
+def test_figure_drop_is_per_page():
+    """설치본은 표 안 그림 목록을 묶음 전체가 함께 써서 다른 쪽의 같은 자리 그림을 지웠다."""
+    fig = (150, 150, 400, 300)
+
+    def boxes(k):
+        out = [_box("image", fig, cls_id=14), _box("text", (100, 600, 900, 700), order=1)]
+        return [_box("table", (100, 100, 1000, 500), cls_id=21)] + out if k == 0 else out
+
+    def respond(q, im):
+        return (200, "<fcel>[F2]<nl>", "stop") if q.startswith("Table") else (200, "글", "stop")
+
+    out = _run(respond, boxes, _pages(2, paint=[fig]))
+    assert [b.label for b in out[0]["parsing_res_list"]] == ["table", "text"]
+    assert [b.label for b in out[1]["parsing_res_list"]] == ["image", "text"]
+
+
+def test_table_figure_ocr_error_is_kept():
+    """그림 OCR 을 켜면(D14) 표 안 그림도 자체 VLM 호출을 한다 — 그 오류를 표 블록에 남긴다."""
+    fig = (150, 150, 400, 300)
+    boxes = lambda k: [_box("table", (100, 100, 1000, 500), cls_id=21), _box("image", fig, cls_id=14)]
+
+    def respond(q, im):
+        if q.startswith("Table"):
+            return 200, "<fcel>가<nl>", "stop"
+        return (400, "too big", "stop") if im.size == (250, 150) else (200, "글", "stop")
+
+    table = _run(respond, boxes, _pages(1, paint=[fig]), ocr_images=True)[0]["parsing_res_list"][0]
+    assert table.label == "table" and table.kdp["figures"][0]["error"].startswith("400")
 
 
 def test_merge_group_and_table_figures():

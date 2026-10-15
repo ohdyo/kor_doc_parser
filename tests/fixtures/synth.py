@@ -62,6 +62,41 @@ def report_pdf(font_path: str, pages: int = 2) -> bytes:
     return buf.getvalue()
 
 
+def _hand_pdf(objs: list[bytes]) -> bytes:
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+def _stream(data: bytes) -> bytes:
+    return b"<< /Length " + str(len(data)).encode() + b" >>\nstream\n" + data + b"\nendstream"
+
+
+def nonbmp_pdf() -> bytes:
+    """ToUnicode 로 'A'→U+1F600(이모지), 'B'→U+20000(확장 한자), 'C'→'C' 인 쪽 — PDFium 이 서로게이트 둘로 준다."""
+    cmap = (b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap "
+            b"/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def "
+            b"/CMapName /Adobe-Identity-UCS def /CMapType 2 def "
+            b"1 begincodespacerange <00> <FF> endcodespacerange "
+            b"3 beginbfchar <41> <D83DDE00> <42> <D840DC00> <43> <0043> endbfchar "
+            b"endcmap CMapName currentdict /CMap defineresource pop end end")
+    return _hand_pdf([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>",
+        _stream(b"BT /F1 24 Tf 20 100 Td (ABC) Tj ET"),
+        _stream(cmap),
+    ])
+
+
 def with_page_box(data: bytes, rotation: int = 0, cropbox=None) -> bytes:
     """모든 쪽에 /Rotate 와 크롭박스를 건 사본."""
     doc = pdfium.PdfDocument(data)
