@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,13 +27,19 @@ JSONL_FIELDS = ("type", "bbox", "section_path", "list_level", "text", "html", "c
                 "caption_id", "unit", "note_ids", "img_path", "figure_text", "truncated", "pii")
 
 
+class RawIncompleteError(RuntimeError):
+    """raw/ 에 빠진 쪽이 있거나 엔진 실행 기록이 없다 — 재조립하지 않는다."""
+
+
 def parse_pdf(pdf_path, out_root=None, settings: Settings | None = None, engine: Engine | None = None) -> Document:
+    t0 = time.perf_counter()
     settings = settings or load_settings()
-    pdf_path = Path(pdf_path)
+    pdf_path = Path(pdf_path).resolve()
     data = pdf_path.read_bytes()
     doc_id = doc_id_of(data)
     doc_dir = Path(out_root or settings.env.paths.out_dir) / doc_dirname(doc_id)
-    raw_dir = doc_dir / "raw"
+    raw_dir, tmp_dir = doc_dir / "raw", doc_dir / "raw.tmp"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
     own_engine = engine is None
     engine = engine or create_engine(settings)
     try:
@@ -40,21 +47,23 @@ def parse_pdf(pdf_path, out_root=None, settings: Settings | None = None, engine:
         try:
             info = read_info(pdf, doc_id, str(pdf_path))
             desc = engine.describe()
-            write_json(raw_dir / "doc.json", info.to_dict())
-            write_json(raw_dir / "engine.json", {
-                "engine": desc,
-                "engine_hash": engine_hash(settings, desc),
-                "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            })
-            if hasattr(engine, "config_snapshot"):
-                write_text(raw_dir / "paddlex_config.yaml", engine.config_snapshot())
-            raws = list(engine.run(_pages(pdf, info, settings, raw_dir), raw_dir))
+            started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            raws = list(engine.run(_pages(pdf, info, settings, tmp_dir), tmp_dir))
         finally:
             with PDFIUM_LOCK:
                 pdf.close()
+        snapshot = engine.config_snapshot() if hasattr(engine, "config_snapshot") else None
     finally:
         if own_engine:
             engine.close()
+    # 엔진이 끝까지 돈 뒤에만 raw/ 를 바꾼다 — 중간에 실패한 실행은 이전 raw/ 를 건드리지 않는다
+    write_json(tmp_dir / "doc.json", info.to_dict())
+    write_json(tmp_dir / "engine.json", {"engine": desc, "engine_hash": engine_hash(settings, desc), "run_at": started,
+                                       "seconds": round(time.perf_counter() - t0, 1)})   # 모델 불러오기 포함
+    if snapshot:
+        write_text(tmp_dir / "paddlex_config.yaml", snapshot)
+    shutil.rmtree(raw_dir, ignore_errors=True)
+    tmp_dir.rename(raw_dir)
     return _finish(info, raws, doc_dir, settings)
 
 
@@ -62,6 +71,8 @@ def reassemble(doc_dir, settings: Settings | None = None) -> Document:
     """raw/ 만으로 판정·조립·출력을 다시 한다(GPU·원본 PDF 불필요)."""
     settings = settings or load_settings()
     raw_dir = Path(doc_dir) / "raw"
+    if not (raw_dir / "engine.json").exists():
+        raise RawIncompleteError(f"{raw_dir} 에 엔진 실행 기록이 없다")
     info = PdfInfo.from_dict(read_json(raw_dir / "doc.json"))
     raws = list(ReplayEngine(raw_dir).run())
     return _finish(info, raws, Path(doc_dir), settings)
@@ -85,6 +96,9 @@ def _pages(pdf, info: PdfInfo, settings: Settings, raw_dir: Path):
 
 
 def _finish(info: PdfInfo, raws, doc_dir: Path, settings: Settings) -> Document:
+    missing = set(range(1, info.n_pages + 1)) - {r.input.sheet_no for r in raws}
+    if missing:
+        raise RawIncompleteError(f"raw/ 에 없는 쪽 {len(missing)}개: {sorted(missing)[:10]}")
     eng = read_json(doc_dir / "raw" / "engine.json")
     doc = Document(
         doc_id=info.doc_id,
@@ -117,11 +131,24 @@ def jsonl_rows(doc: Document):
 
 
 def write_outputs(doc: Document, doc_dir: Path, out: OutputCfg) -> None:
-    write_json(doc_dir / "document.json", doc.model_dump(mode="json", exclude_none=True), indent=1)
+    data = doc.model_dump(mode="json", exclude_none=True)
+    for page in data["pages"]:                         # 계약상 늘 있는 키(기획서 4.2)
+        page.setdefault("n_up", None)
+        for b in page["blocks"]:
+            b.setdefault("order", None)
+    write_json(doc_dir / "document.json", data, indent=1)
+
+    jsonl = doc_dir / "blocks.jsonl"
     if out.write_jsonl:
-        write_jsonl(doc_dir / "blocks.jsonl", jsonl_rows(doc))
+        write_jsonl(jsonl, jsonl_rows(doc))
+    else:
+        jsonl.unlink(missing_ok=True)
     if out.save_images:
         _copy_kept_images(doc, doc_dir)
+    else:
+        shutil.rmtree(doc_dir / "imgs", ignore_errors=True)
+    if not out.keep_raw:                               # 지우면 reassemble 할 수 없다
+        shutil.rmtree(doc_dir / "raw", ignore_errors=True)
 
 
 def _copy_kept_images(doc: Document, doc_dir: Path) -> None:

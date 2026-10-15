@@ -29,29 +29,33 @@ def to_page(raw: RawPage) -> Page:
             a, c = union[b.merged_into], boxes[b.idx]
             union[b.merged_into] = (min(a[0], c[0]), min(a[1], c[1]), max(a[2], c[2]), max(a[3], c[3]))
 
+    table_names = {path: v["name"] for path, v in raw.table_imgs.items()}
     blocks = []
     for b in raw.blocks:
         vlm = b.vlm or {}
+        figs = vlm.get("figures") or []                   # 표 안 그림의 자체 OCR 결과 — 오류·잘림을 표 블록으로 올린다
+        fig_error = next((f["error"] for f in figs if f.get("error")), None)
         blk = Block(
             id=block_id(inp.page_no, b.idx),
             type=b.label,
             bbox=union[b.idx],
             score=_r(b.score) if b.score is not None else None,
             img_path=f"imgs/{b.img}" if b.img else None,
-            error=vlm.get("error"),
+            error=vlm.get("error") or (f"표 안 그림: {fig_error}" if fig_error else None),
         )
         if b.merged_into is not None:
             blk.merged_into = block_id(inp.page_no, b.merged_into)
             blk.keep, blk.drop_reason = False, "merged"
         elif b.label == "table":
-            blk.html = fix_table_imgs(b.content, raw.table_imgs) or None
+            blk.html = fix_table_imgs(b.content, table_names) or None
         elif b.label in FIGURE_LABELS:
             blk.figure_text = b.content or None
         else:
             blk.text = b.content
-        if vlm.get("finish_reason") == "length":
+        flags = [vlm, *figs]
+        if any(f.get("finish_reason") == "length" for f in flags):
             blk.truncated = "length"
-        elif vlm.get("repetition_truncated"):
+        elif any(f.get("repetition_truncated") for f in flags):
             blk.truncated = "repetition"
         blocks.append(blk)
 

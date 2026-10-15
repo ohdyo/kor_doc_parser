@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import urllib.request
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Optional
@@ -57,15 +56,15 @@ def doctor(env: Optional[Path] = EnvOpt, config: Optional[Path] = CfgOpt):
         rows.append(("WARN" if fp.get("missing") else "OK", f"가중치 {name}", fp["path"]))
 
     if s.env.vlm.backend != "native":
-        url = (s.env.vlm.server_url or "").rstrip("/") + "/models"
+        rows.append(("OK" if _version("openai") else "FAIL", "openai(서버 백엔드)", f"설치본 {_version('openai')}"))
+        from .engine.paddle_vl import served_models
+
         try:
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {s.env.vlm.api_key}"} if s.env.vlm.api_key else {})
-            with urllib.request.urlopen(req, timeout=5) as r:
-                names = [m["id"] for m in json.load(r)["data"]]
-            ok = s.env.vlm.api_model_name in names
-            rows.append(("OK" if ok else "FAIL", "VLM 모델 이름", f"요청 {s.env.vlm.api_model_name} / 서버 {names}"))
-        except Exception as e:
-            rows.append(("FAIL", "VLM 서버", f"{url} — {e}"))
+            served = served_models(s.env.vlm.server_url, s.env.vlm.api_key)
+            ok = s.env.vlm.api_model_name in served
+            rows.append(("OK" if ok else "FAIL", "VLM 모델 이름", f"요청 {s.env.vlm.api_model_name} / 서버 {list(served)}"))
+        except OSError as e:
+            rows.append(("FAIL", "VLM 서버", f"{s.env.vlm.server_url} — {e}"))
 
     font = s.env.test.korean_font
     rows.append(("OK" if font and Path(font).exists() else "WARN", "테스트 한글 글꼴", str(font)))

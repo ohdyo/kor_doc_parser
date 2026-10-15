@@ -1,20 +1,22 @@
 """실제 검출기(PP-DocLayoutV3, CPU) + 가짜 VLM 서버로 전체 흐름, parse 와 reassemble 출력이 같은지."""
 import json
-from pathlib import Path
 
+import jsonschema
 import pytest
 
+from kdp.config import apply_env
+from kdp.engine.paddle_vl import _weights_fingerprint
 from kdp.io.ids import doc_dirname
 from kdp.pipeline import parse_pdf, reassemble
+from kdp.schema import json_schema
 from tests.fixtures.fake_vlm import FakeVLM
 from tests.fixtures.synth import report_pdf
-
-LAYOUT = Path.home() / ".paddlex" / "official_models" / "PP-DocLayoutV3"
 
 
 @pytest.fixture()
 def fake_settings(settings):
-    if not LAYOUT.is_dir():
+    apply_env(settings.env)
+    if _weights_fingerprint(settings.env.models.layout_dir, "PP-DocLayoutV3").get("missing"):
         pytest.skip("PP-DocLayoutV3 가중치가 없다")
     s = settings.model_copy(deep=True)
     s.env.device = "cpu"
@@ -40,6 +42,7 @@ def test_parse_then_reassemble(tmp_path, korean_font, fake_settings):
         assert (raw / name).exists(), name
     assert json.loads((raw / "engine.json").read_text())["engine"]["response_hook"] is True
 
+    jsonschema.validate(json.loads((d / "document.json").read_text(encoding="utf-8")), json_schema())
     assert len(doc.pages) == 3 and all(p.blocks for p in doc.pages)
     kept = [b for p in doc.pages for b in p.blocks if b.order]
     assert kept and all(b.text or b.html or b.figure_text or b.img_path for b in kept)

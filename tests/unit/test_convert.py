@@ -15,13 +15,16 @@ def _raw():
         RawBlock(0, "header", (100, 20, 900, 60), "사업 계획"),
         RawBlock(1, "text", (100, 100, 900, 200), "첫 단락 이어지는", vlm={"finish_reason": "stop"}),
         RawBlock(2, "text", (100, 205, 600, 300), "", merged_into=1),
-        RawBlock(3, "table", (100, 400, 900, 700), TABLE, vlm={"finish_reason": "length"}),
+        RawBlock(3, "table", (100, 400, 900, 700), TABLE,
+                 vlm={"finish_reason": "stop", "figures": [{"path": "x", "finish_reason": "length", "error": "400: big"}]}),
         RawBlock(4, "image", (100, 720, 400, 900), "추진 체계", img="p1.b05.png"),
         RawBlock(5, "number", (480, 1600, 520, 1620), "- 1 -"),
         RawBlock(6, "text", (100, 950, 900, 990), "", vlm={"error": "400: too long"}),
     ]
     inp = PageInput(page_no=1, sheet_no=1, scale=2.0, sheet_size=(595.0, 842.0))
-    return RawPage(inp, 1190, 1684, 0.1, blocks, {"imgs/img_in_image_box_10_10_50_50.jpg": "p1.t01.png"})
+    figs = {"imgs/img_in_image_box_10_10_50_50.jpg": {"name": "p1.t01.png", "label": "image",
+                                                       "box": [10, 10, 50, 50], "in_html": True}}
+    return RawPage(inp, 1190, 1684, 0.1, blocks, figs)
 
 
 def _doc(page):
@@ -36,7 +39,8 @@ def test_to_page():
     assert b["p1.b02"].bbox == (50.0, 50.0, 450.0, 150.0)          # 병합 대표 = 구성원 합집합(pt)
     assert b["p1.b03"].merged_into == "p1.b02" and not b["p1.b03"].keep
     assert b["p1.b04"].html.startswith('<table><tr><td><img src="imgs/p1.t01.png" alt="Image" />')
-    assert b["p1.b04"].truncated == "length"
+    assert b["p1.b04"].truncated == "length"                         # 표 안 그림의 잘림·오류도 표 블록으로
+    assert b["p1.b04"].error == "표 안 그림: 400: big"
     assert b["p1.b05"].figure_text == "추진 체계" and b["p1.b05"].img_path == "imgs/p1.b05.png"
     assert b["p1.b07"].error
 

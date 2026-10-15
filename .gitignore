@@ -1,3 +1,7 @@
+# PDF 는 어떤 경로든 올리지 않는다(사내·AI Hub 문서 보호)
+*.pdf
+*.PDF
+
 __pycache__/
 *.egg-info/
 .pytest_cache/

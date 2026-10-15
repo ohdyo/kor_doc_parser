@@ -1,15 +1,21 @@
 """운영 QC(기획서 8.5). 지금은 블록 오류·잘림·빈 출력·drop 이상만 — 텍스트 레이어 일치·반복·환각은 M4."""
 from __future__ import annotations
 
+import html
+import re
+
 from ..config import QCCfg
 from ..engine.base import RawPage
 from ..schema import QC, Document
 
 INK_MIN = 0.01
+_TAG = re.compile(r"<[^>]+>")
 
 
-def _chars(b) -> int:
-    return len(b.text or b.html or b.figure_text or "")
+def visible_chars(b) -> int:
+    """보이는 글자 수 — 표 HTML 의 태그는 세지 않는다('<표 1>' 같은 본문 글자는 그대로 센다)."""
+    s = html.unescape(_TAG.sub(" ", b.html)) if b.html else (b.text or b.figure_text or "")
+    return sum(1 for c in s if not c.isspace())
 
 
 def run_checks(doc: Document, raws: list[RawPage], cfg: QCCfg) -> Document:
@@ -20,9 +26,9 @@ def run_checks(doc: Document, raws: list[RawPage], cfg: QCCfg) -> Document:
     ink = {r.input.page_no: r.ink_ratio for r in raws}
     empty = sum(1 for p in doc.pages
                 if p.keep and ink.get(p.page_no, 0) > INK_MIN
-                and not any(b.keep and _chars(b) for b in p.blocks))
-    total = sum(_chars(b) for b in blocks)
-    dropped = sum(_chars(b) for p in doc.pages for b in p.blocks if not (p.keep and b.keep))
+                and not any(b.keep and visible_chars(b) for b in p.blocks))
+    total = sum(visible_chars(b) for b in blocks)
+    dropped = sum(visible_chars(b) for p in doc.pages for b in p.blocks if not (p.keep and b.keep))
     drop_ratio = round(dropped / total, 4) if total else 0.0
 
     reasons = []
