@@ -9,7 +9,7 @@ from kdp.io.write import read_json_gz
 from kdp.pipeline import RawIncompleteError, parse_pdf, reassemble
 from kdp.schema import json_schema
 from tests.fixtures.stub_engine import StubEngine
-from tests.fixtures.synth import nonbmp_pdf, report_pdf, with_page_box
+from tests.fixtures.synth import nonbmp_pdf, nup_pdf, report_pdf, with_page_box
 
 
 def _parse(tmp_path, data, engine=None, settings=None):
@@ -61,3 +61,12 @@ def test_nonbmp_pdf_parses(tmp_path, settings):
     chars = read_json_gz(d / "raw" / "textlayer" / "p0001.json.gz")
     assert [c["c"] for c in chars] == ["\U0001F600", "\U00020000", "C"]
     assert doc.qc.status == "ok"
+
+
+def test_reassemble_refuses_missing_logical_page(tmp_path, korean_font, settings):
+    _, doc, d = _parse(tmp_path, nup_pdf(korean_font, 2, 2, 4), settings=settings)
+    assert [p.page_no for p in doc.pages] == [1, 2, 3, 4] and {p.sheet_no for p in doc.pages} == {1}
+    for f in ("p0002.json", "p0002.sidecar.json"):                    # 모아찍기 칸 하나만 빠져도 시트는 남는다
+        (d / "raw" / f).unlink()
+    with pytest.raises(RawIncompleteError):
+        reassemble(d, settings)

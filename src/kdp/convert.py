@@ -78,5 +78,6 @@ def to_page(raw: RawPage) -> Page:
         sheet_no=inp.sheet_no,
         size=tuple(_r(v) for v in inp.sheet_size),
         n_up=NUp(**inp.n_up) if inp.n_up else None,
+        rot90_k=inp.rot90_k % 4 or None,
         blocks=blocks,
     )

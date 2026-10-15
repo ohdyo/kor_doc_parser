@@ -8,7 +8,7 @@ from ..config import QCCfg
 from ..engine.base import RawPage
 from ..schema import QC, Document
 
-INK_MIN = 0.01
+INK_MIN = 0.01                  # 쪽번호·간지 글자만 있는 쪽은 0.0~0.002, 본문 6줄 쪽은 0.015(합성 PDF 실측)
 _TAG = re.compile(r"<[^>]+>")
 _LEADER = re.compile(r"\.{2,}|…+|‥+|·{2,}")      # 목차 점선
 
@@ -25,9 +25,11 @@ def run_checks(doc: Document, raws: list[RawPage], cfg: QCCfg) -> Document:
     errors = sum(1 for b in blocks if b.error)
     truncated = sum(1 for b in blocks if b.truncated)
     ink = {r.input.page_no: r.ink_ratio for r in raws}
-    empty = sum(1 for p in doc.pages
-                if p.keep and ink.get(p.page_no, 0) > INK_MIN
-                and not any(b.keep and visible_chars(b) for b in p.blocks))
+    # 내용 없는 쪽 — 공문 메타·결재란만 남은 쪽은 내용이 있는 것으로, 빈 쪽으로 버렸는데 잉크가 있는 쪽(검출이 아무것도 못 찾았거나
+    # 쪽번호·머리말만 찾은 쪽 — '비워 둠' 문구 블록이 있는 쪽은 아니다)은 빈 것으로 센다(기획서 8.5 — 잉크가 있는 쪽인데 keep 글자 0)
+    empty = sum(1 for p in doc.pages if ink.get(p.page_no, 0) > INK_MIN and (
+        (p.keep and not any(visible_chars(b) for b in p.blocks if b.keep or b.drop_reason in ("meta", "approval")))
+        or (p.page_class == "blank" and not any(visible_chars(b) for b in p.blocks if b.keep))))
     total = sum(visible_chars(b) for b in blocks)
     dropped = sum(visible_chars(b) for p in doc.pages for b in p.blocks if not (p.keep and b.keep))
     drop_ratio = round(dropped / total, 4) if total else 0.0

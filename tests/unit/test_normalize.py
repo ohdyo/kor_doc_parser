@@ -4,8 +4,8 @@ from kdp.schema import Block, Document, Page, ParserInfo, Source
 
 
 def test_units_spaced_titles_dots():
-    assert norm_text("감리 일정 : 2025 년 10 월 13 일 ~ 10 월 17 일, 5 명의 인원, 3 %") == \
-        "감리 일정 : 2025년 10월 13일 ~ 10월 17일, 5명의 인원, 3%"
+    assert norm_text("점검 일정 : 2025 년 4 월 7 일 ~ 4 월 11 일, 5 명의 인원, 3 %") == \
+        "점검 일정 : 2025년 4월 7일 ~ 4월 11일, 5명의 인원, 3%"
     assert norm_text("3 개선 사항, 2 일정, 1 원칙") == "3 개선 사항, 2 일정, 1 원칙"        # 단위가 아닌 낱말은 그대로
     assert norm_text("[목  차]") == "[목차]" and norm_text("1. 개 요") == "1. 개요" and norm_text("구 분") == "구분"
     assert norm_text("사업 관리") == "사업 관리" and norm_text("또 한 번 더 크게") == "또 한 번 더 크게"
@@ -20,14 +20,14 @@ def test_latex_and_literal_newline():
 
 def test_normalize_blocks_skips_formula():
     page = Page(page_no=1, sheet_no=1, size=(595, 842), blocks=[
-        Block(id="p1.b01", type="table", bbox=(0, 0, 1, 1), html="<table><tr><td>개 선\\n현 황</td><td>2026 년</td></tr></table>"),
+        Block(id="p1.b01", type="table", bbox=(0, 0, 1, 1), html="<table><tr><td>추 진\\n현 황</td><td>2026 년</td></tr></table>"),
         Block(id="p1.b02", type="display_formula", bbox=(0, 0, 1, 1), text="$x^{2}$"),
         Block(id="p1.b03", type="text", bbox=(0, 0, 1, 1), text="그대로")])
     doc = normalize(Document(doc_id="sha256:ab", source=Source(paths=["a.pdf"], pages=1),
                              parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"),
                              pages=[page]))
     b = doc.pages[0].blocks
-    assert b[0].html == "<table><tr><td>개선현황</td><td>2026년</td></tr></table>"   # 한 글자씩 띄운 머리칸은 붙인다
+    assert b[0].html == "<table><tr><td>추진현황</td><td>2026년</td></tr></table>"   # 한 글자씩 띄운 머리칸은 붙인다
     assert b[0].provenance == [{"rule": "normalize"}] and b[1].text == "$x^{2}$" and b[2].provenance is None
 
 

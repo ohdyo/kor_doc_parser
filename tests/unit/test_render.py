@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from kdp.io.pdf import open_pdf, text_chars
-from kdp.io.render import px_box_to_pt, render_page, render_scale, unrotate_box, user_box_to_display
+from kdp.io.render import px_box_to_pt, render_page, render_region, render_scale, unrotate_box, user_box_to_display
 from tests.fixtures.synth import RED, marker_pdf, with_page_box
 
 SCALE = 2.0
@@ -56,3 +56,20 @@ def test_unrotate_box(k):
     ys, xs = np.where(rot)
     box = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
     assert unrotate_box(box, k, (rot.shape[1], rot.shape[0])) == (120, 30, 180, 60)
+
+
+@pytest.mark.parametrize("crop", [None, (50, 50, 545, 792)])
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_render_region(korean_font, rotation, crop):
+    """영역만 다시 그린 그림의 px 를 원점·배율로 시트 pt 로 되돌리면 표식 자리와 맞는다 — 자르기는 /Rotate 반영 뒤 표시 쪽 기준."""
+    doc = open_pdf(with_page_box(marker_pdf(korean_font), rotation, crop))
+    page = doc[0]
+    want = user_box_to_display(RED, page.get_bbox(), page.get_rotation())
+    region = (want[0] - 30.3, want[1] - 20.7, want[2] + 40.1, want[3] + 25.9)
+    scale = 3.3
+    img, origin = render_region(page, scale, region, page.get_size())
+    red = (img[:, :, 2] > 200) & (img[:, :, 1] < 60) & (img[:, :, 0] < 60)
+    assert all(abs(a - b) <= 0.5 for a, b in zip(px_box_to_pt(_pixel_box(red), scale, origin), want))
+    assert abs(img.shape[1] - (region[2] - region[0]) * scale) <= 2 and abs(img.shape[0] - (region[3] - region[1]) * scale) <= 2   # 잘라 낼 양을 px 로 올림
+    page.close()
+    doc.close()

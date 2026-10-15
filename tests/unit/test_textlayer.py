@@ -8,8 +8,8 @@ from kdp.textlayer.extract import _fix_table, _join, apply_text_layer, mark_hidd
 H = 842.0
 INFO = PdfInfo(doc_id="sha256:ab", path="a.pdf", n_pages=1,
                pages=[PageInfo(sheet_no=1, size=(595, H), rotation=0, bbox=(0, 0, 595, H), text_chars=0)])
-BODY = "감리 대상 사업 전반에 대하여 단계별 이행 여부를 점검하고 보완 조치를 요구한다"
-OTHER = "감리 결과 보고 내용을 정리하여 기한 안에 제출한다"
+BODY = "공공 데이터 개방 과제의 단계별 추진 여부를 분기마다 점검하고 미흡한 과제는 보완 계획을 세운다"
+OTHER = "분기 점검 결과를 정리하여 기한 안에 제출한다"
 SKIPPED = [{"rule": "vlm_skipped", "reason": "text_layer"}]
 
 
@@ -100,11 +100,11 @@ def test_garbled_or_invisible_layer_not_used():
 
 
 def test_hidden_chars_not_used():
-    chars = _chars("담당자 홍길동 주무관은 감리 결과를 보고한다")
+    chars = _chars("담당자 홍길동 주무관은 점검 결과를 보고한다")
     for c in chars:
         if c["c"] in "홍길동":                                       # 가림 상자 아래 이름
             c["hid"] = True
-    shown = "담당자 주무관은 감리 결과를 보고한다"
+    shown = "담당자 주무관은 점검 결과를 보고한다"
     p = apply_text_layer(_doc(("text", (70, 95, 560, 115), shown, None)), {1: chars}, INFO, prefer=True).pages[0]
     assert "홍길동" not in p.blocks[0].text
 
@@ -177,7 +177,7 @@ def test_skipped_blocks_filled_or_flagged():
 
 
 def test_table_misread_does_not_distrust_page():
-    chars = _chars(BODY) + _chars(OTHER, y=140) + _chars("구분 내용 비고 사업관리 요구사항 반영 완료", y=200)
+    chars = _chars(BODY) + _chars(OTHER, y=140) + _chars("구분 내용 비고 과제관리 대장 반영 완료", y=200)
     table = ("table", (70, 195, 560, 215), None, "<table><tr><td>전혀</td><td>다른</td><td>표</td></tr></table>")
     p = apply_text_layer(_skip_doc(BODY, table), {1: chars}, INFO, prefer=True).pages[0]
     assert p.blocks[1].text == OTHER and p.blocks[1].error is None   # 표 오독은 표 갈래가 맡는다

@@ -5,7 +5,7 @@ from kdp.config import Classify
 from kdp.convert import to_page
 from kdp.engine.base import PageInput, RawBlock, RawPage
 from kdp.pipeline import jsonl_rows
-from kdp.schema import Document, ParserInfo, Source
+from kdp.schema import Block, Document, Page, ParserInfo, Source
 
 TABLE = '<table><tr><td><img src="imgs/img_in_image_box_10_10_50_50.jpg" alt="Image"" />사진</td></tr></table>'
 
@@ -82,3 +82,24 @@ def test_output_hash_covers_jsonl_fields_and_meta():
     meta = doc.model_copy(deep=True)
     meta.meta = {"date": "2026-07"}
     assert len({base, output_hash(routed), output_hash(meta)}) == 3
+
+
+def test_output_hash_covers_block_ids_and_pages():
+    """블록 목록 줄의 block_id·page_no·sheet_no 가 바뀌면 해시도 바뀐다 — 버리는 블록이 하나 더 잡혀 번호만 밀린 재파싱도
+    다시 적재해야 옛 block_id 가 새 정본에서 다른 블록을 가리키지 않는다."""
+    doc = assign_order(classify_blocks(_doc(to_page(_raw())), Classify()))
+    ids, pages, sheets = (doc.model_copy(deep=True) for _ in range(3))
+    ids.pages[0].blocks[1].id = "p1.b03"                       # p1.b02 → p1.b03(앞에 로고 하나가 더 잡힌 꼴)
+    pages.pages[0].page_no = 2
+    sheets.pages[0].sheet_no = 2
+    assert len({output_hash(d) for d in (doc, ids, pages, sheets)}) == 4
+
+
+def test_blank_text_is_not_output():
+    """공백뿐인 글(VLM 이 빈 영역에서 줄바꿈만 낸 것)은 출력 블록이 아니다 — 순서·JSONL 행을 받지 않는다."""
+    page = Page(page_no=1, sheet_no=1, size=(595, 842), blocks=[
+        Block(id=f"p1.b0{i + 1}", type="text", bbox=(70, 100 + 30 * i, 520, 120 + 30 * i), text=x)
+        for i, x in enumerate(["본문 문장입니다.", "\n", " \n ", " ", ""])])
+    doc = assign_order(_doc(page))
+    assert [b.order for b in doc.pages[0].blocks] == [1, None, None, None, None]
+    assert [r["block_id"] for r in jsonl_rows(doc)] == ["p1.b01"]

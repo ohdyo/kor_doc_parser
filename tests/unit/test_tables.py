@@ -1,11 +1,12 @@
-"""표(기획서 4.3 규칙 6·13, D18) — 머리행, 제목·단위·출처 연결, 표 갈래."""
-from kdp.assemble.tables import header_rows, parse_rows, tables
-from kdp.config import QCCfg
+"""표(기획서 4.3 규칙 1·6·13, D18) — 머리행, 제목·단위·출처 연결, 표 갈래, '이하 빈칸', 쪽 넘김 표."""
+from kdp.assemble.tables import appendage, header_rows, merge_tables, parse_rows, tables
+from kdp.classify.blocks import classify_blocks
+from kdp.config import Classify, QCCfg
 from kdp.qc.checks import run_checks
-from kdp.schema import Block, Document, Page, ParserInfo, Source
+from kdp.schema import Block, Document, NUp, Page, ParserInfo, Source
 
-T = ("<table><tr><td>영역</td><td>주요 지적사항</td><td>개선 현황</td></tr>"
-     "<tr><td>사업관리</td><td>요구사항 추적표 보완이 필요함</td><td>추적표를 보완하였음</td></tr>"
+T = ("<table><tr><td>영역</td><td>점검 내용</td><td>조치 결과</td></tr>"
+     "<tr><td>사업관리</td><td>관리 대장 보완이 필요함</td><td>관리 대장을 보완하였음</td></tr>"
      "<tr><td>데이터</td><td>표준화 점검 결과 반영이 필요함</td><td>반영 완료</td></tr></table>")
 
 
@@ -29,14 +30,14 @@ def test_header_rows():
 
 
 def test_caption_unit_source_and_th():
-    doc = tables(_doc(("figure_title", (120, 425, 360, 436), "[도표 1] 설계단계 주요 지적사항 (단위: 건)"),
+    doc = tables(_doc(("figure_title", (120, 425, 360, 436), "[도표 1] 분기별 점검 결과 (단위: 건)"),
                       ("table", (84, 438, 550, 724), T),
-                      ("text", (84, 726, 300, 738), "자료: 감리 결과")))
+                      ("text", (84, 726, 300, 738), "자료: 분기 점검 결과")))
     t = doc.pages[0].blocks[1]
     assert (t.caption_id, t.unit, t.note_ids, t.header_rows) == ("p1.b01", "건", ["p1.b03"], 1)
-    assert t.html.startswith("<table><tr><th>영역</th><th>주요 지적사항</th><th>개선 현황</th></tr><tr><td>")
+    assert t.html.startswith("<table><tr><th>영역</th><th>점검 내용</th><th>조치 결과</th></tr><tr><td>")
     assert (t.route, t.route_reason) == ("html", None)
-    plain = tables(_doc(("figure_title", (120, 425, 360, 436), "종료단계 감리 결과"), ("table", (84, 438, 550, 724), T)))
+    plain = tables(_doc(("figure_title", (120, 425, 360, 436), "하반기 점검 결과"), ("table", (84, 438, 550, 724), T)))
     assert plain.pages[0].blocks[1].caption_id is None                 # 패턴 없는 구역 제목은 잇지 않는다
     far = tables(_doc(("figure_title", (120, 300, 360, 311), "[표 2] 일정"), ("table", (84, 438, 550, 724), T)))
     assert far.pages[0].blocks[1].caption_id is None
@@ -128,3 +129,301 @@ def test_layer_agreement_routes_and_qc():
     out = tables(doc)
     assert [(b.route, b.route_reason) for b in out.pages[0].blocks] == [("image", "failed"), ("html", None)]
     assert "table_layer_agreement" in run_checks(out, [], QCCfg()).qc.reasons      # 0.9 미만은 검수
+
+
+def test_blank_below_rows_removed():
+    blank = ('<table><tr><td>품명</td><td>수량</td><td>비고</td></tr><tr><td>노트북</td><td>2</td><td>교체</td></tr>'
+             '<tr><td colspan="3">- 이하 빈칸 -</td></tr><tr><td></td><td></td><td></td></tr></table>')
+    split = blank.replace('<td colspan="3">- 이하 빈칸 -</td>', "<td>이하</td><td>빈칸</td><td></td>")
+    value = blank.replace('<td colspan="3">- 이하 빈칸 -</td>', "<td>3</td><td>이하 빈칸</td><td></td>")
+    spanned = ('<table><tr><td rowspan="3">구분</td><td>품명</td></tr><tr><td>노트북</td></tr>'
+               "<tr><td>이하 빈칸</td></tr></table>")
+    only = "<table><tr><td>(이하 여백)</td></tr></table>"
+    out = tables(_doc(*(("table", (0, 200 * i, 500, 200 * i + 150), h)
+                        for i, h in enumerate((blank, split, value, spanned, only))))).pages[0].blocks
+    assert "이하" not in out[0].html and "<td>노트북</td>" in out[0].html and out[0].html.count("<tr>") == 3
+    assert out[0].provenance == [{"rule": "blank_below", "removed": ["- 이하 빈칸 -"]}]
+    assert "이하" not in out[1].html                                      # 칸에 나뉘어 적혀도
+    assert "이하 빈칸" in out[2].html and not out[2].provenance            # 다른 값이 있는 행은 둔다
+    assert "이하 빈칸" in out[3].html                                      # 세로 병합이 걸친 행은 둔다(칸이 어긋날 수 있다)
+    assert "이하 여백" in (out[4].html or out[4].text)                     # 지우면 빈 표가 되는 것은 둔다
+
+
+HEAD = ("header", (70, 40, 520, 55), "○○ 사업 결과 보고서")
+BUDGET = ("<table><tr><td>구분</td><td>본예산</td><td>집행액</td></tr><tr><td>인건비</td><td>1,500</td><td>1,200</td></tr>"
+          "<tr><td>운영비</td><td>800</td><td>650</td></tr></table>")
+BUDGET2 = ("<table><tr><td>구분</td><td>본예산</td><td>집행액</td></tr><tr><td>장비비</td><td>2,000</td><td>1,900</td></tr>"
+           "<tr><td>합계</td><td>4,300</td><td>3,750</td></tr></table>")
+REST = ("<table><tr><td>보안</td><td>접근 통제 점검 보완 필요</td><td>보완 완료</td></tr>"
+        "<tr><td>품질</td><td>시험 결과서와 산출물 목록의 정합성 보완이 필요함</td><td>보완 예정</td></tr></table>")
+STAFF = ("<table><tr><td>직급</td><td>정원</td><td>현원</td></tr><tr><td>책임</td><td>4</td><td>3</td></tr>"
+         "<tr><td>선임</td><td>6</td><td>6</td></tr></table>")                # 열 수·폭이 BUDGET 과 같은 다른 표
+
+
+def _page(no, *blocks, size=(595, 842), sheet=None, n_up=None):
+    return Page(page_no=no, sheet_no=sheet or no, size=size, n_up=n_up, blocks=[
+        Block(id=f"p{no}.b{i + 1:02d}", type=t, bbox=bb, text=x if t != "table" else None, html=x if t == "table" else None)
+        for i, (t, bb, x) in enumerate(blocks)])
+
+
+def _merge(*pages):
+    doc = Document(doc_id="sha256:ab", source=Source(paths=["a.pdf"], pages=len(pages)),
+                   parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"),
+                   pages=list(pages))
+    return merge_tables(tables(classify_blocks(doc, Classify())))
+
+
+def _num(no):
+    return ("number", (290, 800, 305, 812), f"- {no} -")
+
+
+def _end_page(html=BUDGET, *after):
+    return _page(1, HEAD, ("figure_title", (84, 560, 400, 572), "<표 3> 사업비 집행 현황"),
+                 ("text", (470, 560, 550, 572), "(단위: 천원)"), ("table", (84, 575, 550, 760), html), *after, _num(1))
+
+
+def test_merge_across_continued_unit_and_title():
+    doc = _merge(_end_page(BUDGET, ("text", (450, 762, 550, 772), "(다음 쪽에 계속)"),
+                           ("footnote", (70, 780, 520, 792), "1) 2026년 6월 말 기준")),
+                 _page(2, HEAD, ("text", (84, 60, 150, 72), "(계속)"),
+                       ("figure_title", (84, 75, 400, 87), "<표 3> 사업비 집행 현황(계속)"),
+                       ("text", (470, 75, 550, 87), "(단위: 천원)"), ("table", (84, 90, 550, 300), BUDGET2),
+                       ("text", (84, 320, 550, 360), "집행률은 계획 대비 87% 이다."), _num(2)))
+    p1, p2 = doc.pages[0].blocks, doc.pages[1].blocks
+    t = p2[4]
+    assert (t.continues_from, t.header_rows, t.unit, t.caption_id) == ("p1.b04", 1, "천원", "p2.b03")
+    assert t.provenance == [{"rule": "merge_tables", "repeated_header_rows": 1}]
+    assert t.html.count("<th>") == 3 and "<td>장비비</td>" in t.html          # HTML 은 합치지 않는다 — 조각마다 제 쪽에
+    for m in (p1[4], p2[1]):                                                 # '(계속)' 표시만 버린다
+        assert (m.keep, m.drop_reason, m.provenance) == (False, "continued", [{"rule": "merge_tables", "table": "p2.b05"}])
+    assert all(b.keep for b in (p1[5], p2[2], p2[3]))                        # 각주·제목 반복·단위 줄은 남는다
+    assert p1[3].continues_from is None and p1[3].provenance is None
+
+
+def test_not_merged():
+    four = ("<table><tr><td>구분</td><td>본예산</td><td>집행액</td><td>비고</td></tr>"
+            "<tr><td>장비비</td><td>2,000</td><td>1,900</td><td></td></tr></table>")
+    cases = {
+        "열 수": _page(2, HEAD, ("table", (84, 90, 550, 300), four)),
+        "폭": _page(2, HEAD, ("table", (84, 90, 400, 300), BUDGET2)),
+        "다른 표 제목": _page(2, HEAD, ("figure_title", (84, 75, 400, 87), "<표 4> 인력 투입 현황"),
+                          ("table", (84, 90, 550, 300), BUDGET2)),
+        "제목": _page(2, HEAD, ("paragraph_title", (84, 60, 300, 75), "Ⅲ. 추진 결과"), ("table", (84, 90, 550, 300), BUDGET2)),
+        "표를 가리키는 본문": _page(2, HEAD, ("text", (84, 60, 550, 85), "<표 3>의 인건비 세부 내역은 다음과 같다."),
+                             ("table", (84, 90, 550, 300), BUDGET2)),
+        "다른 단위": _page(2, HEAD, ("text", (84, 60, 150, 72), "(계속)"), ("text", (470, 75, 550, 87), "(단위: 백만원)"),
+                       ("table", (84, 90, 550, 300), BUDGET2)),
+    }
+    for name, nxt in cases.items():
+        doc = _merge(_end_page(), nxt)
+        assert all(b.continues_from is None for p in doc.pages for b in p.blocks), name
+        assert all(b.keep for b in doc.pages[1].blocks if b.type != "header"), name   # 잇지 못하면 '(계속)' 도 남긴다
+    for label in ("text", "vision_footnote", "footnote"):                   # 출처 주가 붙은 표는 거기서 끝난다 — 라벨과 상관없이
+        source = _merge(_end_page(BUDGET, (label, (84, 762, 300, 772), "자료: 기획재정부")),
+                        _page(2, HEAD, ("table", (84, 90, 550, 300), STAFF)))
+        t = source.pages[1].blocks[1]
+        assert source.pages[0].blocks[3].note_ids == ["p1.b05"], label
+        assert (t.continues_from, t.header_rows, t.provenance) == (None, 1, None) and "<th>직급</th>" in t.html, label
+    dropped = _page(2, HEAD, ("table", (84, 90, 550, 300), BUDGET2))
+    dropped.keep = False
+    assert _merge(_end_page(), dropped).pages[1].blocks[1].continues_from is None
+
+
+def test_unrepeated_header_cleared():
+    doc = _merge(_page(1, HEAD, ("table", (84, 575, 550, 790), T), _num(1)),
+                 _page(2, HEAD, ("table", (84, 60, 550, 200), REST), _num(2)))
+    t = doc.pages[1].blocks[1]
+    assert tables(_doc(("table", (84, 60, 550, 200), REST))).pages[0].blocks[0].header_rows == 1   # 따로 보면 첫 데이터 행이 머리행 같다
+    assert (t.continues_from, t.header_rows) == ("p1.b02", None) and "<th>" not in t.html
+    assert t.provenance == [{"rule": "merge_tables", "header_from": "p1.b02", "header_rows_was": 1}]
+
+
+def test_three_page_chain():
+    full = REST.replace("</table>", "<tr><td>운영</td><td>장애 대응 절차서 보완</td><td>보완 완료</td></tr></table>")
+    again = T.replace("사업관리", "교육").replace("데이터", "인수인계")
+    doc = _merge(_page(1, HEAD, ("text", (84, 100, 550, 560), "점검 결과는 다음과 같다."),
+                       ("table", (84, 575, 550, 790), T), _num(1)),
+                 _page(2, HEAD, ("table", (84, 60, 550, 790), full), _num(2)),
+                 _page(3, HEAD, ("table", (84, 60, 550, 300), again), _num(3)))
+    t2, t3 = doc.pages[1].blocks[1], doc.pages[2].blocks[1]
+    assert (t2.continues_from, t3.continues_from) == ("p1.b03", "p2.b02")
+    assert t2.provenance == [{"rule": "merge_tables", "header_from": "p1.b03", "header_rows_was": 1}] and t2.header_rows is None
+    assert t3.provenance == [{"rule": "merge_tables", "repeated_header_rows": 1}] and t3.header_rows == 1   # 첫 조각과 견준다
+
+
+def test_n_up_pages_use_logical_width():
+    sheet = (842, 595)
+    left = NUp(cols=2, rows=1, cell=(0, 0), region=(0, 0, 421, 595))
+    right = NUp(cols=2, rows=1, cell=(0, 1), region=(421, 0, 842, 595))
+    doc = _merge(_page(1, ("table", (40, 400, 380, 560), BUDGET), size=sheet, sheet=1, n_up=left),
+                 _page(2, ("table", (461, 40, 801, 560), BUDGET2), size=sheet, sheet=1, n_up=right),
+                 _page(3, ("table", (60, 60, 540, 400), BUDGET2), sheet=2))       # 보통 쪽 — 시트 pt 폭은 41% 크지만 쪽 대비 폭이 같다
+    assert [p.blocks[0].continues_from for p in doc.pages] == [None, "p1.b01", "p2.b01"]
+    same_pt = _merge(_page(1, ("table", (60, 500, 400, 800), BUDGET)),               # 시트 pt 폭이 같아도 쪽 대비 폭이 다르면 잇지 않는다
+                     _page(2, ("table", (40, 40, 380, 300), BUDGET2), size=sheet, sheet=2, n_up=left))
+    assert same_pt.pages[1].blocks[0].continues_from is None
+
+
+def test_ended_table_not_merged():
+    """'이하 빈칸' 으로 끝난 표와 쪽 가운데서 끝난 표는 다음 쪽의 같은 모양 표와 잇지 않는다 — 표는 자리가 모자랄 때만
+    넘어간다. 큰 행이 통째로 밀려 앞 조각 아래가 조금 빈 것은 잇는다."""
+    people = ("<table><tr><td>성명</td><td>소속</td><td>직위</td></tr><tr><td>홍길동</td><td>정보화팀</td><td>팀장</td></tr>"
+              "<tr><td>김철수</td><td>정보화팀</td><td>주무관</td></tr></table>")
+    blank = BUDGET.replace("</table>", '<tr><td colspan="3">- 이하 빈칸 -</td></tr>'
+                           + "<tr><td></td><td></td><td></td></tr>" * 6 + "</table>")
+    for name, last in (("이하 빈칸", ("table", (84, 150, 550, 790), blank)), ("쪽 가운데", ("table", (84, 150, 550, 420), BUDGET))):
+        doc = _merge(_page(1, HEAD, ("text", (84, 100, 550, 140), "1. 구매 물품"), last, _num(1)),
+                     _page(2, HEAD, ("table", (84, 60, 550, 200), people), _num(2)))
+        t = doc.pages[1].blocks[1]
+        assert (t.continues_from, t.header_rows, t.provenance) == (None, 1, None) and "<th>성명</th>" in t.html, name
+    pushed = _merge(_page(1, HEAD, ("table", (84, 300, 550, 640), T), _num(1)),          # 아래 140pt 빔 — 밀린 큰 행
+                    _page(2, HEAD, ("table", (84, 60, 550, 400), REST), _num(2)))
+    assert pushed.pages[1].blocks[1].continues_from == "p1.b02"
+    marked = _merge(_page(1, HEAD, ("table", (84, 100, 550, 420), T), _num(1)),         # 크게 비어도 '(계속)' 이라 적었으면 잇는다
+                    _page(2, HEAD, ("text", (84, 45, 150, 57), "(계속)"), ("table", (84, 60, 550, 400), REST), _num(2)))
+    assert marked.pages[1].blocks[2].continues_from == "p1.b02"
+
+
+def test_spilled_row_stays_table_and_merges():
+    """2열 표의 마지막 한 행만 다음 쪽으로 넘어간 조각은 배치용 표(글상자)로 풀지 않는다 — 앞 표와 잇는다."""
+    two = ("<table><tr><td>구분</td><td>내용</td></tr><tr><td>목적</td><td>민원 접수 처리 시스템 고도화</td></tr>"
+           "<tr><td>기간</td><td>2026. 3. ~ 2026. 12.</td></tr></table>")
+    row = "<table><tr><td>기타</td><td>그 밖에 사업 추진에 필요한 세부 사항은 발주기관과 협의하여 따로 정한다</td></tr></table>"
+    doc = _merge(_page(1, HEAD, ("text", (84, 500, 550, 540), "사업 개요는 다음과 같다."), ("table", (84, 560, 550, 790), two),
+                       _num(1)),
+                 _page(2, HEAD, ("table", (84, 60, 550, 100), row), ("text", (84, 120, 550, 160), "세부 일정은 붙임과 같다."),
+                       _num(2)))
+    t = doc.pages[1].blocks[1]
+    assert (t.type, t.continues_from, t.text) == ("table", "p1.b03", None)
+    other = _merge(_page(1, HEAD, ("table", (84, 560, 550, 790), T), _num(1)),          # 앞 쪽 끝 표와 열 수가 다르면 글상자
+                   _page(2, HEAD, ("table", (84, 60, 550, 100), row), _num(2)))
+    assert other.pages[1].blocks[1].type == "text"
+
+
+def test_unnumbered_title_repeated_with_continued_mark():
+    """번호 없는 표 제목('□ …')이 다음 쪽에서 '(계속)' 을 달고 되풀이되면 건너뛰고 잇는다. '(계속)' 이 없거나 글이 다르면
+    잇지 않는다(번호가 없어 같은 표라는 증거가 약하다)."""
+    def run(label, t1, t2):
+        return _merge(_page(1, HEAD, (label, (84, 560, 400, 572), t1), ("table", (84, 575, 550, 790), BUDGET), _num(1)),
+                      _page(2, HEAD, (label, (84, 60, 400, 72), t2), ("table", (84, 75, 550, 300), BUDGET2), _num(2)))
+    for label, t1, t2 in (("paragraph_title", "□ 사업비 집행 현황", "□ 사업비 집행 현황(계속)"),
+                          ("figure_title", "사업비 집행 현황", "사업비 집행 현황 (계속)")):
+        doc = run(label, t1, t2)
+        assert doc.pages[1].blocks[2].continues_from == "p1.b03" and doc.pages[1].blocks[1].keep, label   # 제목 반복은 남긴다
+    for t2 in ("□ 사업비 집행 현황", "□ 인력 투입 현황(계속)"):
+        assert run("paragraph_title", "□ 사업비 집행 현황", t2).pages[1].blocks[2].continues_from is None, t2
+
+
+def test_repeated_header_with_ocr_noise():
+    """스캔 OCR 이 되풀이한 머리행의 한 글자를 달리 읽어도 반복 머리행으로 센다 — tables 가 단 <th> 를 지키고, 데이터
+    행은 완전 일치만 센다."""
+    noisy = BUDGET2.replace("<td>집행액</td>", "<td>집행엑</td>", 1)
+    doc = _merge(_page(1, HEAD, ("table", (84, 575, 550, 790), BUDGET), _num(1)),
+                 _page(2, HEAD, ("table", (84, 60, 550, 300), noisy), _num(2)))
+    t = doc.pages[1].blocks[1]
+    assert (t.continues_from, t.header_rows, t.html.count("<th>")) == ("p1.b02", 1, 3)
+    assert t.provenance == [{"rule": "merge_tables", "repeated_header_rows": 1}]
+
+
+def test_failed_table_without_html_routed_to_image():
+    """VLM 오류·빈 출력으로 HTML 이 없는 표도 이미지 갈래(D18) — 덜 망가진 표만 표시가 붙지 않게."""
+    doc = _doc(("table", (0, 0, 100, 100), None), ("table", (0, 200, 100, 300), ""))
+    doc.pages[0].blocks[0].error = "413: prompt too long"
+    assert [(b.route, b.route_reason) for b in tables(doc).pages[0].blocks] == [("image", "failed")] * 2
+
+
+def test_blank_text_blocks_do_not_block_merge():
+    """공백뿐인 글 블록(VLM 이 빈 영역에서 줄바꿈만 낸 것)은 출력 블록이 아니라 쪽 끝·첫머리 판정에 끼지 않는다."""
+    doc = _merge(_end_page(BUDGET, ("text", (84, 765, 520, 778), " \n ")),
+                 _page(2, HEAD, ("text", (84, 50, 520, 58), " "), ("table", (84, 90, 550, 300), BUDGET2), _num(2)))
+    assert doc.pages[1].blocks[2].continues_from == "p1.b04"
+
+
+def test_layout_boxes_at_page_edge_not_spilled():
+    """쪽 넘김 조각 예외(한 행만 넘어간 조각은 표로 둔다)는 한쪽만 글상자 꼴일 때만 — 쪽 경계의 두 글상자는 풀어 둔다(문단
+    이음이 맡는다). 쪽 끝 글상자 다음 쪽의 제 머리행 있는 표는 잇지 않고 머리행을 지킨다(사진이 있어 풀지 못한 글상자도).
+    '이하 빈칸' 으로 끝난 표 다음 쪽의 글상자도 푼다."""
+    box1 = "<table><tr><td>※ 참고: 2025년 시범사업 결과를 반영하여 2026년부터 전국 단위로 확대 추진한다.</td></tr></table>"
+    box2 = ("<table><tr><td>핵심 요약: 정부는 행정 업무의 디지털 전환을 위하여 공통 기반 시스템을 구축하고 단계적으로 "
+            "확산한다.</td></tr></table>")
+    doc = _merge(_page(1, HEAD, ("text", (84, 100, 550, 560), "사업 추진 현황은 다음과 같다."),
+                       ("table", (84, 600, 550, 700), box1), _num(1)),
+                 _page(2, HEAD, ("table", (84, 60, 550, 130), box2), ("text", (84, 150, 550, 200), "세부 내용은 붙임과 같다."),
+                       _num(2)))
+    a, b = doc.pages[0].blocks[2], doc.pages[1].blocks[1]
+    assert (a.type, b.type, b.continues_from) == ("text", "text", None)
+    assert a.provenance == b.provenance == [{"rule": "layout_table"}]
+    sched = ("<table><tr><td>구분</td><td>일정</td></tr><tr><td>착수</td><td>2026. 3.</td></tr>"
+             "<tr><td>완료</td><td>2026. 12.</td></tr></table>")
+    box = "<table><tr><td>추진 배경</td><td>민원 접수 처리 방식이 기관마다 달라 문서 유통과 공동 활용에 한계가 있었다.</td></tr></table>"
+    photo = box.replace("<td>민원", '<td><img src="imgs/p1.t01.png" alt="Image" />민원')
+    for name, edge in (("글상자", box), ("사진 글상자", photo)):
+        doc = _merge(_page(1, HEAD, ("text", (84, 100, 550, 560), "□ 사업 개요"), ("table", (84, 620, 550, 700), edge), _num(1)),
+                     _page(2, HEAD, ("table", (84, 60, 550, 200), sched), _num(2)))
+        t = doc.pages[1].blocks[1]
+        assert (t.continues_from, t.header_rows, t.provenance) == (None, 1, None) and "<th>구분</th>" in t.html, name
+    assert doc.pages[0].blocks[2].type == "table"                             # 사진은 잃지 않게 표로 둔다
+    for edge in (box, photo):                                                 # 이어진다고 적었으면 잇는다
+        doc = _merge(_page(1, HEAD, ("text", (84, 100, 550, 560), "□ 사업 개요"), ("table", (84, 620, 550, 700), edge), _num(1)),
+                     _page(2, HEAD, ("text", (84, 45, 150, 57), "(계속)"), ("table", (84, 60, 550, 200), sched), _num(2)))
+        assert doc.pages[1].blocks[2].continues_from == "p1.b03" and not doc.pages[1].blocks[1].keep
+    head = "<tr><td>세부 추진 과제명과 주요 내용 요약</td><td>추진 일정 및 담당 기관</td></tr>"
+    rest = ("<table>" + head + "<tr><td>공통 기반 시스템 구축과 기관별 단계적 확산</td><td>2026년 하반기 정보화팀</td></tr>"
+            "<tr><td>민원 접수와 게시판 기능 통합</td><td>2027년 상반기 운영팀</td></tr></table>")
+    doc = _merge(_page(1, HEAD, ("text", (84, 100, 550, 560), "□ 추진 과제"), ("table", (84, 740, 550, 790), f"<table>{head}</table>"),
+                       _num(1)),
+                 _page(2, HEAD, ("table", (84, 60, 550, 300), rest), _num(2)))    # 머리행만 쪽 끝에 남고 다음 쪽이 되풀이했다
+    t = doc.pages[1].blocks[1]
+    assert (doc.pages[0].blocks[2].type, t.continues_from, t.header_rows) == ("table", "p1.b03", 1)
+    form = ("<table><tr><td>품명</td><td>비고</td></tr><tr><td>노트북</td><td>교체</td></tr>"
+            '<tr><td colspan="2">- 이하 빈칸 -</td></tr>' + "<tr><td></td><td></td></tr>" * 6 + "</table>")
+    notice = ("<table><tr><td>유의 사항</td><td>신청서는 기한 안에 소속 기관을 거쳐 제출하여야 하며 늦게 낸 신청서는 받지 "
+              "않는다.</td></tr></table>")
+    doc = _merge(_page(1, HEAD, ("text", (84, 100, 550, 140), "1. 구매 물품"), ("table", (84, 150, 550, 790), form), _num(1)),
+                 _page(2, HEAD, ("table", (84, 60, 550, 120), notice), ("text", (84, 140, 550, 180), "문의는 담당 부서로 한다."),
+                       _num(2)))
+    b = doc.pages[1].blocks[1]
+    assert (b.type, b.route, b.continues_from, b.provenance) == ("text", None, None, [{"rule": "layout_table"}])
+
+
+def test_unnumbered_section_title_repeat_checks_room():
+    """번호 없는 구역 제목 '□ …(계속)' 반복은 같은 표라는 증거가 약하다 — 쪽 가운데서 끝난 표는 다음 쪽의 같은 모양 다른
+    표와 잇지 않고 그 표의 머리행을 지킨다. 번호 있는 표 제목 반복('<표 3> …(계속)')은 빈자리를 보지 않고 잇는다."""
+    result = ("<table><tr><td>과제</td><td>목표</td><td>실적</td></tr><tr><td>민원 접수 고도화</td><td>100%</td><td>95%</td></tr>"
+              "<tr><td>문서관리 통합</td><td>3개 기관</td><td>3개 기관</td></tr></table>")
+
+    def run(label, t1, t2):
+        return _merge(_page(1, HEAD, (label, (84, 90, 400, 102), t1), ("table", (84, 105, 550, 400), result), _num(1)),
+                      _page(2, HEAD, (label, (84, 60, 400, 72), t2), ("table", (84, 75, 550, 300), BUDGET),
+                            ("text", (84, 320, 550, 360), "인건비 집행률은 계획 대비 80% 수준이다."), _num(2)))
+    t = run("paragraph_title", "□ 추진 실적", "□ 추진 실적(계속)").pages[1].blocks[2]
+    assert (t.continues_from, t.header_rows, t.provenance) == (None, 1, None) and "<th>구분</th>" in t.html
+    numbered = run("figure_title", "<표 3> 추진 실적", "<표 3> 추진 실적(계속)")
+    assert numbered.pages[1].blocks[2].continues_from == "p1.b03"
+
+
+def test_unnumbered_title_with_unit_line_between():
+    """[번호 없는 제목 / '(단위: 천원)' 한 줄 / 표] 꼴 — 단위 줄을 건너 그 위 제목을 앞 표 제목 자리로 보고, 다음 쪽의 같은 꼴
+    '(계속)' 반복을 건너뛰어 잇는다."""
+    doc = _merge(_page(1, HEAD, ("paragraph_title", (84, 540, 400, 552), "□ 사업비 집행 현황"),
+                       ("text", (470, 558, 550, 570), "(단위: 천원)"), ("table", (84, 575, 550, 790), BUDGET), _num(1)),
+                 _page(2, HEAD, ("paragraph_title", (84, 40, 400, 52), "□ 사업비 집행 현황(계속)"),
+                       ("text", (470, 58, 550, 70), "(단위: 천원)"), ("table", (84, 75, 550, 300), BUDGET2), _num(2)))
+    t = doc.pages[1].blocks[3]
+    assert (t.continues_from, t.header_rows) == ("p1.b04", 1)
+    other = _merge(_page(1, HEAD, ("paragraph_title", (84, 540, 400, 552), "□ 사업비 집행 현황"),   # 제목 글이 다르면 잇지 않는다
+                         ("text", (470, 558, 550, 570), "(단위: 천원)"), ("table", (84, 575, 550, 790), BUDGET), _num(1)),
+                   _page(2, HEAD, ("paragraph_title", (84, 40, 400, 52), "□ 인력 투입 현황(계속)"),
+                         ("text", (470, 58, 550, 70), "(단위: 천원)"), ("table", (84, 75, 550, 300), BUDGET2), _num(2)))
+    assert other.pages[1].blocks[3].continues_from is None
+
+
+def test_appendage_lines_and_references():
+    """부속 줄(제목·주·'이하 빈칸')과 표·그림을 가리키는 본문 — 번호 뒤에 한글·다른 번호·접속이 오면 본문이다."""
+    for s in ("주: 2026년 6월 말 기준", "주1) 집행액은 6월 말 기준", "이하 빈칸", "표 3. 사업비 집행 현황", "그림 3. 추진 체계도",
+              "사진 2 현장 점검 모습", "<표 1> 단계별 추진 기관 (단위: 개)", "[그림 3] 조직 구성도", "표 3-1 세부 내역",
+              "표 3 과제별 추진 현황", "자료: 기획재정부"):
+        assert appendage(s), s
+    for s in ("표 1, 2와 같이 사업비 집행률은", "표 1~3은 사업비 집행 현황을", "그림 2·3 처럼 시스템은", "표 3 및 그림 2에서 보듯이",
+              "표 3과 같이 집행률은", "<표 3>의 세부 내역은", "[표 1], [표 2]와 같이", "표 3 과 같이 집행률은", "표 3ㆍ4 는"):
+        assert not appendage(s), s

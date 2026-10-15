@@ -17,11 +17,12 @@ from ..config import Settings, apply_env, digest
 from ..io.ids import block_id
 from ..io.render import user_box_to_display
 from ..io.write import read_json_gz, write_json, write_png
+from ..prep import nup, orient
 from ..textlayer.extract import MIN_PAGE_CHARS, plausible, visible
 from .base import PageInput, RawPage, page_stem, raw_page_from_files
 from .skip import SkipPlan
 
-CODE_VERSION = "4"
+CODE_VERSION = "7"                                     # 7: 방향 모름 모아찍기(기운 방향 + 칸 아래 쪽번호)·쌓인 쪽(글자·빈 띠)·쪽번호 값(이어지는 쌍)
 CROP_LABELS = {"table", "chart", "display_formula"}   # PaddleX 가 크롭을 안 주는 것 — 렌더에서 직접 자른다
 PIPELINE_NAMES = {"v1": "PaddleOCR-VL", "v1.5": "PaddleOCR-VL-1.5", "v1.6": "PaddleOCR-VL-1.6"}
 
@@ -98,14 +99,19 @@ def _inside(box, outer) -> bool:
 
 
 def _weights_fingerprint(model_dir: str | None, model_name: str) -> dict:
-    """가중치 판 — 경로·파일 크기·수정 시각(대용량이라 내용 해시는 하지 않는다)."""
-    base = Path(os.environ.get("PADDLE_PDX_CACHE_HOME", Path.home() / ".paddlex")) / "official_models"
-    candidates = [Path(model_dir)] if model_dir else [base / model_name, base / model_name.rsplit("-", 1)[0]]
+    """가중치 판 — 경로·파일 크기·수정 시각(대용량이라 내용 해시는 하지 않는다). '~' 경로도 불러 쓰는 쪽과 같게 펼친다."""
+    base = Path(os.environ.get("PADDLE_PDX_CACHE_HOME", Path.home() / ".paddlex")).expanduser() / "official_models"
+    candidates = [Path(model_dir).expanduser()] if model_dir else [base / model_name, base / model_name.rsplit("-", 1)[0]]
     d = next((c for c in candidates if c.is_dir()), candidates[0])
     if not d.is_dir():
         return {"path": str(d), "missing": True}
     files = sorted((p.name, p.stat().st_size, int(p.stat().st_mtime)) for p in d.iterdir() if p.is_file())
     return {"path": str(d), "files": digest(files)}
+
+
+def _rules(mod) -> str:
+    """prep 모듈 기준값(대문자 상수)의 해시 — 방향·모아찍기 기준을 바꾸면 CODE_VERSION 을 올리지 않아도 엔진 해시가 바뀐다."""
+    return digest({k: v for k, v in sorted(vars(mod).items()) if k.isupper()})
 
 
 class PaddleVLEngine:
@@ -171,7 +177,11 @@ class PaddleVLEngine:
                 # 서버 백엔드도 서버가 읽는 폴더(models.vlm_dir)를 적으면 그 판이 들어간다 — 서빙 이름만으로는 가중치 교체를 모른다
                 "vlm": _weights_fingerprint(env.models.vlm_dir, vlm) if native or env.models.vlm_dir else None,
                 "served": self._served,
+                "doc_ori": (_weights_fingerprint(str(orient.model_dir(env)), orient.MODEL)   # 방향 판정이 불러 쓰는 그 폴더
+                            if self._settings.parse.orientation == "scan_only" else None),
             },
+            "prep": {"orient": _rules(orient) if self._settings.parse.orientation == "scan_only" else None,
+                     "nup": _rules(nup) if self._settings.parse.nup.enabled else None},
         }
 
     def run(self, pages, raw_dir: Path):
@@ -195,14 +205,15 @@ class PaddleVLEngine:
         chars = None
         f = raw_dir / "textlayer" / f"{page_stem(inp.sheet_no)}.json.gz"
         if "text_layer" in self._skip() and inp.user_bbox and not inp.rot90_k and f.exists():
-            real = [c for c in read_json_gz(f) if not c["gen"] and not c["c"].isspace()]
-            seen = [c for c in real if visible(c)]                   # 투명 OCR 레이어·가려진 글자는 뺀다
-            if len(seen) >= MIN_PAGE_CHARS and len(seen) >= 0.5 * len(real) and plausible("".join(c["c"] for c in seen)):
+            real = [(c, user_box_to_display(c["box"], inp.user_bbox, inp.rotation))
+                    for c in read_json_gz(f) if not c["gen"] and not c["c"].isspace()]
+            if inp.n_up:                                             # 모아찍기: 이 논리 페이지 영역의 글자만(textlayer 와 같은 기준)
+                x0, y0, x1, y1 = inp.n_up["region"]
+                real = [(c, b) for c, b in real if x0 <= (b[0] + b[2]) / 2 <= x1 and y0 <= (b[1] + b[3]) / 2 <= y1]
+            seen = [(c, b) for c, b in real if visible(c)]           # 투명 OCR 레이어·가려진 글자는 뺀다
+            if len(seen) >= MIN_PAGE_CHARS and len(seen) >= 0.5 * len(real) and plausible("".join(c["c"] for c, _ in seen)):
                 (ox, oy), s = inp.origin, inp.scale
-                chars = []
-                for c in seen:
-                    l, t, r, b = user_box_to_display(c["box"], inp.user_bbox, inp.rotation)
-                    chars.append((((l - ox) * s, (t - oy) * s, (r - ox) * s, (b - oy) * s), c["c"]))
+                chars = [(((l - ox) * s, (t - oy) * s, (r - ox) * s, (b - oy) * s), c["c"]) for c, (l, t, r, b) in seen]
         return SkipPlan("logo" in self._skip(), chars)
 
     def _run_batch(self, batch, raw_dir: Path):
