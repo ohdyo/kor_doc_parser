@@ -150,6 +150,43 @@ def test_docling_heading_and_list_depth():
         {"list_level": 1}, {"list_level": 2}, {"list_level": None}]
 
 
+def test_figure_image_text_and_meta():
+    golden = {"pages": {1: "normal"}, "meta": {"title": "보도 제목", "date": "2026-06-22"},
+              "figures": [{"page": 1, "bbox": [0, 0, 100, 100], "kind": "chart", "caption": [0, -20, 100, -10]},
+                          {"page": 1, "bbox": [200, 0, 300, 100], "kind": "photo", "caption": None},
+                          {"page": 1, "bbox": [0, 200, 300, 400], "kind": "poster", "caption": None},
+                          {"page": 1, "bbox": [400, 0, 500, 100], "kind": "map", "caption": [400, -20, 500, -10]}],
+              "image_text": [{"page": 1, "lines": ["모기기피제 사용", "야외활동 후 샤워", "없는 줄입니다"]}]}
+    run = {"meta": {"title": "보도  제목", "date": "2026-06-21"}, "pages": {"1": [
+        {**cmp._blk("figure", [2, 2, 98, 98], True, "", "chart"), "caption_bbox": [10, -18, 90, -12]},   # 찾음, 제목 이음
+        cmp._blk("text", [10, 80, 60, 95], True, "20주 21주", "text"),           # 그래프 속 글자가 글 블록으로 — 섞임
+        cmp._blk("figure", [200, 0, 245, 100], True, "", "image"),               # 사진을 둘로 나눔 — 함께 덮으면 찾음
+        cmp._blk("figure", [250, 0, 300, 100], True, "", "image"),
+        cmp._blk("figure", [0, 0, 600, 800], True, "", "image"),                 # 쪽 전체 그림은 어느 그림도 아니다
+        cmp._blk("text", [10, 210, 290, 390], True, "모기기피제 사용 야외활동 후 샤워", "text"),   # 포스터 글은 섞임이 아니다
+        cmp._blk("figure", [400, 0, 500, 100], False, "", "image")]}}           # 버린 그림은 못 찾음
+    r = cmp.evaluate({}, golden, run)
+    assert r["figures"] == {"found": [2, 4], "caption_ok": [1, 2], "leak_chars": 6}
+    assert r["image_text"] == [2, 3]
+    assert r["meta"] == [1, 2]                                                    # 띄어쓰기 차이는 같게 본다
+    assert r["figure_chars"] is None                                              # 그림으로 된 표(종류 없는 그림)가 없다
+    rows = {c[0]: c[1:] for c in ([s.strip() for s in line.strip("|").split("|")]
+                                  for line in cmp.render({"a": r, "b": cmp.evaluate({}, {"pages": {1: "normal"}}, run)})
+                                  .splitlines())}
+    assert rows["그림 찾음"] == ["2/4 (50.0%)", "—"]                              # 정답에 그림 종류가 없는 쪽은 '—'
+    assert rows["그림 속 글자 읽음(포스터 줄)"] == ["2/3 (66.7%)", "—"]
+    assert rows["문서 정보 맞음(제목·기관·날짜)"] == ["1/2 (50.0%)", "—"]
+    assert rows["그림 영역에서 읽은 글자 수"] == ["—", "—"]
+    no_meta = cmp.evaluate({}, golden, {"pages": run["pages"]})                   # 비교군은 메타를 내지 않는다
+    assert no_meta["meta"] is None
+
+
+def test_report_rows_unchanged_without_new_golden_fields():
+    r = cmp.evaluate({}, {"pages": {1: "normal"}}, {"seconds": 1.0, "pages": {"1": []}})
+    labels = [line.strip("|").split("|")[0].strip() for line in cmp.render({"a": r}).splitlines()[2:]]
+    assert not {"그림 찾음", "그림 속 글자 읽음(포스터 줄)", "문서 정보 맞음(제목·기관·날짜)"} & set(labels)
+
+
 def test_list_item_split_into_two_blocks():
     golden = {"pages": {1: "normal"}, "lists": [{"page": 1, "bbox": [100, 200, 500, 260], "level": 1}]}
     def run(lv2):
