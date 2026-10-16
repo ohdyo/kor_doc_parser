@@ -1,12 +1,15 @@
 """블록 라벨 정책(기획서 5.2). 글상자(aside_text)는 버리되 내용이 있는 것은 살리고 aside 를 단다.
 문장 꼴인 문단 제목 라벨은 본문(text)으로 바꾼다 — 문서 제목(doc_title)은 그대로(표어·보도자료 제목은 문장 꼴이어도 문서 제목).
+'붙임 1' 꼬리표 옆 같은 줄 제목은 꼬리표와 한 제목 블록으로 합친다(라벨을 버리기 전에).
 결재란·공문 메타 규칙은 rules_meta."""
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 from ..config import Classify
-from ..schema import Block, Document
+from ..geometry import local, page_size
+from ..schema import Block, Document, Page
 
 DROP_LABELS = {
     "header": "header",
@@ -21,7 +24,14 @@ DROP_LABELS = {
 TITLE_SENTENCE_MIN = 12     # 이보다 짧은(띄어쓰기 뺀) 제목은 끝맺음 꼴이어도 그대로 둔다 — 명사 제목('추진 배경')은 짧다
 _NOTE = re.compile(r"^\s*(?:※|[□■○●◦▪*]?\s*[\[<〈【(]?\s*참\s*고(?:\s*(?:자\s*료|사\s*항))?(?![가-힣]))")   # '※'·'□ 참고'·'참고자료' 박스
 _END = re.compile(r"(?<=[가-힣]{2})[.!?。](?=\s|$)|(?:다|요|함|음|임|됨)\s*$")   # 문장 끝 — '가.'·'2026.' 은 아니다
-ITEM = re.compile(r"^\s*(?:[□■○●◦▪ㅇ◆◇▶►➢•\-–·*]|\d{1,2}[.)]|[가-하][.)]|\(\d{1,2}\)|[①-⑳])\s*\S")   # 개조식 항목 줄
+ITEM = re.compile(r"^\s*(?:[□■○●◦▪ㅇ◆◇▶►➢•\-–·*]|\d{1,2}[.)]|[가-하][.)]|\(\d{1,2}\)|[①-⑳➀-➓❶-❿])\s*\S")   # 개조식 항목 줄
+# 번호 붙은 붙임 꼬리표만 있는 블록('붙임 1'·'[붙임 2]'·'별첨 3') — 옆 상자의 글이 그 붙임의 제목이다
+APPENDIX_TAG = re.compile(r"[\[<〈【(「『]?\s*(?:붙\s*임|별\s*첨|첨\s*부|부\s*록|별\s*지)\s*(?:제\s*)?(?:\d{1,2}|[Ⅰ-Ⅻ]|[A-Z])"
+                          r"\s*(?:호\s*)?(?:서\s*식\s*)?[\]>〉】)」』]?\s*\.?")
+_TAG_HEAD = re.compile(APPENDIX_TAG.pattern + r"(?:\s+|$)")                 # 꼬리표로 시작하는 줄(뒤는 띄어쓰기·끝)
+_ATTACH_LIST = re.compile(r"\d\s*부\s*\.|\d\s*부\s*$|끝\s*\.?\s*$")         # '붙임 1. 계획 1부. 끝.' — 붙임 목록 줄
+TAG_GAP = 0.1               # 꼬리표와 옆 제목 사이 가로 틈 상한(논리 쪽 너비 대비, A4 약 60pt)
+TAG_TITLE_MAX = 60          # 꼬리표 옆 제목 글자 수(띄어쓰기 뺀) 상한 — 긴 것은 본문 문장
 # 제목 라벨의 문장 끝 — 개조식(…같음·있음·함·임·됨)과 …니다·한다·같다·요. '책임·포함'·'개요·필요'·'만들다'(표어 제목)는 아니다
 _CLAUSE = re.compile(r"(?:[같있없였었했겠않]음|(?<!포)함|(?<![책모위])임|됨|니다|[이하한된인였었했있없겠같]다"
                      r"|[어아여해워와봐줘져세네게데래대나까에]요)\s*[.。!?]?\s*$")
@@ -44,13 +54,64 @@ def _keep_aside(b: Block, cfg: Classify) -> bool:
     return bool(_NOTE.match(b.text or "")) or sentences(b.text) >= cfg.aside_keep_min_sentences
 
 
+def _key(text: str | None) -> str:
+    return "".join((text or "").split())
+
+
+def _running(doc: Document) -> set[str]:
+    """두 쪽 이상에 같은 글로 나온 머리말 — 되풀이 머리말이다('붙임 1 사업계획서' 를 쪽마다 찍은 문서)."""
+    seen = Counter(k for p in doc.pages for k in {_key(b.text) for b in p.blocks if b.type == "header" and b.text})
+    return {k for k, n in seen.items() if n >= 2}
+
+
+def _tag_titles(page: Page, running: set[str]) -> None:
+    """'붙임 1' 꼬리표와 그 붙임의 제목 — 쪽 맨 위 제목 상자를 검출기가 머리말(header)로 잡아 버리던 것(실측 test2.pdf, 쪽마다
+    글이 다르다). 되풀이되지 않는 머리말이 꼬리표로 시작하면 제목으로 돌리고, 꼬리표 블록 오른쪽 같은 줄 블록(한 줄·짧고
+    항목·번호로 시작하지 않음 — 상자가 꼬리표와 조금 겹쳐도 오른쪽으로 더 뻗으면)의 글은 꼬리표 블록에 합친다."""
+    live = [b for b in page.blocks if b.merged_into is None and (b.text or "").strip()]
+    for b in live:
+        s = " ".join(b.text.split())
+        if b.type == "header" and _key(s) not in running and "\n" not in b.text.strip() and (m := _TAG_HEAD.match(s)) \
+                and not _ATTACH_LIST.search(s) and len(_key(s[m.end():])) <= TAG_TITLE_MAX:
+            b.provenance = (b.provenance or []) + [{"rule": "appendix_title", "type": b.type}]
+            b.type = "paragraph_title"
+    width = page_size(page)[0]
+    for tag in live:
+        if not tag.keep or tag.merged_into is not None or tag.type not in ("paragraph_title", "doc_title", "text") \
+                or not APPENDIX_TAG.fullmatch(" ".join(tag.text.split())):
+            continue
+        tx0, ty0, tx1, ty1 = local(page, tag.bbox)
+        right = []
+        for b in live:
+            if b is tag or b.merged_into is not None or b.type not in ("header", "paragraph_title", "doc_title", "text") \
+                    or (b.type == "header" and _key(b.text) in running):
+                continue
+            x0, y0, x1, y1 = local(page, b.bbox)
+            s = " ".join(b.text.split())
+            if min(ty1, y1) - max(ty0, y0) >= 0.5 * min(ty1 - ty0, y1 - y0) and x0 >= tx0 - 2 and x1 > tx1 \
+                    and x0 - tx1 <= TAG_GAP * width and "\n" not in b.text.strip() \
+                    and len(s.replace(" ", "")) <= TAG_TITLE_MAX and not ITEM.match(s) and not APPENDIX_TAG.match(s):
+                right.append((x0, b))
+        if not right:
+            continue
+        b = min(right, key=lambda r: r[0])[1]
+        tag.text = " ".join(tag.text.split()) + " " + " ".join(b.text.split())
+        tag.bbox = (min(tag.bbox[0], b.bbox[0]), min(tag.bbox[1], b.bbox[1]),
+                    max(tag.bbox[2], b.bbox[2]), max(tag.bbox[3], b.bbox[3]))
+        tag.type = "paragraph_title" if tag.type == "text" else tag.type
+        tag.provenance = (tag.provenance or []) + [{"rule": "appendix_title", "with": b.id, "type": b.type}]
+        b.keep, b.drop_reason, b.merged_into, b.text = False, "merged", tag.id, None   # 글자는 대표에만(병합 묶음 규약)
+
+
 def classify_blocks(doc: Document, cfg: Classify) -> Document:
     drop = dict(DROP_LABELS)
     if cfg.footnote == "drop":
         drop["footnote"] = "footnote"
         drop["vision_footnote"] = "footnote"
     doc = doc.model_copy(deep=True)
+    running = _running(doc)
     for page in doc.pages:
+        _tag_titles(page, running)
         for b in page.blocks:
             if b.merged_into is None and b.type == "paragraph_title" and sentence_like(b.text):
                 b.provenance = (b.provenance or []) + [{"rule": "title_sentence", "type": b.type}]

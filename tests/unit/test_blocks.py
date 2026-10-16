@@ -73,3 +73,40 @@ def test_sentence_doc_titles_stay_doc_titles():
     blocks = classify_blocks(_doc(*[("doc_title", x) for x in titles]), Classify()).pages[0].blocks
     assert all(sentence_like(x) for x in titles)
     assert [(b.type, b.provenance) for b in blocks] == [("doc_title", None)] * 3
+
+
+def _pages(*pages):
+    return Document(doc_id="sha256:ab", source=Source(paths=["a.pdf"], pages=len(pages)),
+                    parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"),
+                    pages=[Page(page_no=n + 1, sheet_no=n + 1, size=(595, 842), blocks=[
+                        Block(id=f"p{n + 1}.b{i + 1:02d}", type=t, bbox=bb, text=x) for i, (t, bb, x) in enumerate(bs)])
+                        for n, bs in enumerate(pages)])
+
+
+TAG = ("paragraph_title", (64, 76, 111, 97), "붙임 1")
+
+
+def test_appendix_tag_takes_title_beside_it():
+    doc = classify_blocks(_pages(
+        [TAG, ("header", (132, 76, 505, 96), "말라리아 매개모기 발생 현황"), ("text", (60, 120, 520, 200), "본문")],
+        [("paragraph_title", (64, 76, 112, 96), "붙임 2"), ("header", (74, 76, 455, 97), "발령 기준 및 조치사항")],
+        [("header", (66, 76, 458, 97), "붙임 3 매개모기 특징 및 감시 지점")]), Classify())
+    p1, p2, p3 = doc.pages
+    assert (p1.blocks[0].type, p1.blocks[0].text, p1.blocks[0].keep) == ("paragraph_title", "붙임 1 말라리아 매개모기 발생 현황", True)
+    assert p1.blocks[0].bbox == (64, 76, 505, 97)
+    assert (p1.blocks[1].keep, p1.blocks[1].drop_reason, p1.blocks[1].merged_into, p1.blocks[1].text) == \
+        (False, "merged", "p1.b01", None)                                    # 쪽 맨 위 제목 상자를 머리말로 잡은 것
+    assert p2.blocks[0].text == "붙임 2 발령 기준 및 조치사항" and p2.blocks[1].merged_into == "p2.b01"   # 상자가 꼬리표와 겹친다
+    assert (p3.blocks[0].type, p3.blocks[0].keep) == ("paragraph_title", True)                       # 꼬리표와 제목이 한 블록
+    assert p3.blocks[0].provenance == [{"rule": "appendix_title", "type": "header"}]
+
+
+def test_appendix_tag_leaves_running_header_and_list_lines():
+    run = ("header", (66, 30, 458, 44), "붙임 1 사업계획서")                 # 쪽마다 찍은 머리말
+    doc = classify_blocks(_pages(
+        [run, TAG, ("text", (132, 76, 505, 96), "1. 계획서 1부.")],
+        [run, ("header", (66, 76, 458, 97), "붙임 2. 명단 1부.  끝.")]), Classify())
+    p1, p2 = doc.pages
+    assert (p1.blocks[0].keep, p1.blocks[0].drop_reason) == (False, "header")
+    assert p1.blocks[1].text == "붙임 1" and p1.blocks[2].keep and p1.blocks[2].merged_into is None   # 번호 항목은 잇지 않는다
+    assert (p2.blocks[1].type, p2.blocks[1].keep) == ("header", False)       # 붙임 목록 줄은 제목이 아니다

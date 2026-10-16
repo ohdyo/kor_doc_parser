@@ -57,6 +57,10 @@ _NOT_ORG = re.compile(r"(?:보고|설명|간담|토론|공청|박람|전시|발�
 _NAMES = "|".join(r"\s*".join(w) for w in sorted(FIELDS, key=len, reverse=True))
 _LABEL = re.compile(rf"(?<![^\s/|(])(?:(?P<name>{_NAMES})|(?P<post>우)(?=\s*\d{{3}}-?\d{{2,3}}))(?=\s*[:：]|[\s()]|$)")
 END = re.compile(r"(?:^|\s)끝\s*\.\s*$", re.M)                  # 공문 본문 끝(규정 제4조⑤ — '… 1부.  끝.')
+# 보도자료 머리의 보도·배포 일시 꼬리표 — 그룹 press 가 있으면 보도 날짜(배포보다 앞세운다)
+_PRESS = re.compile(r"\s*(?:(?P<press>보\s*도(?:\s*(?:시\s*점|일\s*시|일\s*자|일))?|엠\s*바\s*고)"
+                    r"|배\s*포(?:\s*(?:일\s*시|일\s*자|일))?)(?![가-힣])\s*[:：]?\s*")
+_DATED = re.compile(r"\s*[(\[]?\s*(?:19|20)\d{2}\s*[.년/\-]")      # 날짜로 시작하는 글 — 꼬리표 바로 뒤·옆 칸
 # 문장 줄 — 항목 이름이 있어도 메타 줄이 아니다. '개요·필요' 로 끝나는 제목은 문장이 아니다
 _SENT = re.compile(r"(?:다|[어아여해워와봐줘져세네게데래대나까에]요)\s*[.。!?]?\s*$")
 _TERSE = re.compile(r"[함음임됨]\s*\.?\s*$")                    # 개조식 끝맺음('… 예정임.')
@@ -320,6 +324,36 @@ def _issuer_line(page: Page, heads: list[Block]) -> None:
         b.meta = {"issuer": s}
 
 
+def _press_dates(page: Page) -> None:
+    """보도자료 머리의 보도·배포 일시 → doc_meta(date)(실측 test2.pdf — '보도시점' 꼬리표는 머리말로 버려지고 옆 날짜 칸만
+    글로 남았다). 첫 논리 페이지 위쪽에서 꼬리표 블록(버린 것도) 오른쪽 같은 줄의 날짜 글 블록, 또는 꼬리표 뒤에 날짜가 든 글
+    블록만. 날짜 값은 보도 날짜를 앞세워 한 블록에만 단다."""
+    h = page_size(page)[1]
+    top = [b for b in page.blocks if b.merged_into is None and (b.text or "").strip()
+           and local(page, b.bbox)[1] < TOP_RATIO * h]
+    found = []                                          # (보도 날짜가 아님, 블록, 날짜)
+    for lab in top:
+        s = " ".join(lab.text.split())
+        if not (m := _PRESS.match(s)):
+            continue
+        rank = m.group("press") is None
+        if rest := s[m.end():]:                         # 꼬리표와 날짜가 한 블록
+            if lab.keep and lab.type == "text" and _DATED.match(rest) and (d := find_date(rest)) and len(rest) <= 30:
+                found.append((rank, lab, d))
+            continue
+        x0, y0, x1, y1 = local(page, lab.bbox)
+        for b in top:
+            bx0, by0, _, by1 = local(page, b.bbox)
+            if b is not lab and b.keep and b.type == "text" and bx0 >= x1 - GAP \
+                    and min(y1, by1) - max(y0, by0) >= 0.5 * min(y1 - y0, by1 - by0) \
+                    and len(" ".join(b.text.split())) <= 30 and _DATED.match(b.text) and (d := find_date(b.text)):
+                found.append((rank, b, d))
+                break
+    for i, (_, b, d) in enumerate(sorted(found, key=lambda f: f[0])):
+        _retype(b, "doc_meta", "meta")
+        b.meta = {"date": _iso(d)} if i == 0 else None
+
+
 def mark_meta_blocks(doc: Document) -> Document:
     """결재란·공문 메타 블록의 type 을 바꾸고 keep=false 로 — 원래 type 은 provenance, 메타 값은 block.meta 에.
     본문이 섞인 블록은 그대로 두고 값만 남긴다. 결재란 표에 함께 든 메타 행의 값도 block.meta 에."""
@@ -350,4 +384,6 @@ def mark_meta_blocks(doc: Document) -> Document:
                 heads += part
     if heads:
         _issuer_line(doc.pages[0], heads)
+    if doc.pages:
+        _press_dates(doc.pages[0])
     return doc

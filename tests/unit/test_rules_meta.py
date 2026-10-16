@@ -380,3 +380,26 @@ def test_event_title_above_head_meta_is_not_issuer():
     doc = _run(_doc(memo, _page(2, BODY)))
     assert [(b.type, b.keep) for b in doc.pages[0].blocks[:3]] == [("paragraph_title", True), ("doc_meta", False), ("doc_meta", False)]
     assert doc.meta == {"title": "3월 2주차 업무 보고 자료 제출"}
+
+
+def test_press_release_date():
+    doc = _run(_doc(_page(1, ("header", (244, 82, 329, 98), "보도참고자료"),
+                          ("header", (200, 112, 243, 126), "보도시점"), ("text", (272, 112, 354, 126), "2026. 6. 22.(월)"),
+                          ("header", (390, 112, 535, 126), "배포 2026. 6. 23.(화) 18:30"),
+                          ("doc_title", (154, 138, 448, 164), "전국 말라리아 주의보 발령"), BODY)))
+    b = doc.pages[0].blocks
+    assert (b[2].type, b[2].keep, b[2].meta) == ("doc_meta", False, {"date": "2026-06-22"})   # 버린 꼬리표 옆 날짜 칸
+    assert doc.meta["date"] == "2026-06-22"
+
+
+def test_press_release_date_prefers_release_over_distribution():
+    doc = _run(_doc(_page(1, ("text", (60, 112, 240, 126), "배포 2026. 6. 21.(일) 10:00"),
+                          ("text", (300, 112, 540, 126), "보도일시 2026. 6. 22.(월) 12:00"), BODY)))
+    b = doc.pages[0].blocks
+    assert [(x.type, x.meta) for x in b[:2]] == [("doc_meta", None), ("doc_meta", {"date": "2026-06-22"})]
+    assert doc.meta["date"] == "2026-06-22"
+
+
+def test_press_words_in_body_are_not_dates():
+    doc = _run(_doc(_page(1, ("text", (70, 110, 520, 124), "보도 자료에 따르면 2026. 3. 1. 시행"), BODY)))
+    assert doc.pages[0].blocks[0].keep and "date" not in doc.meta

@@ -427,3 +427,34 @@ def test_appendage_lines_and_references():
     for s in ("표 1, 2와 같이 사업비 집행률은", "표 1~3은 사업비 집행 현황을", "그림 2·3 처럼 시스템은", "표 3 및 그림 2에서 보듯이",
               "표 3과 같이 집행률은", "<표 3>의 세부 내역은", "[표 1], [표 2]와 같이", "표 3 과 같이 집행률은", "표 3ㆍ4 는"):
         assert not appendage(s), s
+
+
+def test_bracket_title():
+    from kdp.assemble.tables import bracket_title
+    assert bracket_title("[ 위험지역의 최근 4주간 기상요인 변화 ]") and bracket_title("<말라리아 주의보 및 경보 발령 기준>")
+    assert not bracket_title("[참고]") and not bracket_title("<붙임>") and not bracket_title("(단위: 천원)")
+    assert not bracket_title("[단위: 천원]") and not bracket_title("[ 제목 ] 뒤에 글") and not bracket_title("(계속)")
+
+
+def test_bracket_title_captions_table_above_only():
+    doc = tables(_doc(("text", (180, 100, 420, 114), "<말라리아 경보 발령 기준>"), ("table", (60, 120, 540, 200), T),
+                      ("text", (180, 205, 420, 219), "[ 아래 줄 괄호 제목 ]"), ("table", (60, 400, 540, 480), T),
+                      ("text", (60, 380, 120, 394), "[참고]")))
+    b = doc.pages[0].blocks
+    assert b[1].caption_id == "p1.b01"
+    assert b[3].caption_id is None                    # 위 '[참고]' 는 꼬리표, 앞 표 바로 아래 괄호 줄은 받지 않는다
+
+
+def test_figure_caption_prefers_bracket_title_above():
+    doc = tables(_doc(("figure_title", (180, 100, 420, 114), "[ 국내 환자 주별 발생 추이 ]"),
+                      ("chart", (60, 118, 540, 300), None),
+                      ("figure_title", (280, 304, 310, 314), "주차"),                     # 그래프 바로 아래 축 이름
+                      ("figure_title", (100, 400, 230, 412), "얼룩날개모기 암컷"),          # 괄호 없는 그림 제목만
+                      ("image", (100, 416, 230, 500), None),
+                      ("text", (240, 400, 520, 412), "[ 머리와 날개 특징 ]"),
+                      ("image", (240, 416, 370, 500), None), ("image", (380, 416, 520, 500), None),
+                      ("image", (60, 600, 90, 630), None)))                               # 제목 없는 작은 그림
+    b = {x.id: x for x in doc.pages[0].blocks}
+    assert b["p1.b02"].caption_id == "p1.b01" and b["p1.b05"].caption_id == "p1.b04"
+    assert b["p1.b07"].caption_id == b["p1.b08"].caption_id == "p1.b06"             # 나란한 두 그림이 한 제목을 함께
+    assert b["p1.b09"].caption_id is None

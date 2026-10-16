@@ -1,7 +1,8 @@
-"""표(기획서 4.3 규칙 1·6·13, D18) — 머리행, 표 제목·단위·출처 연결, 표 갈래, '이하 빈칸' 행, 쪽 넘김 표.
+"""표(기획서 4.3 규칙 1·6·13, D18) — 머리행, 표·그림 제목·단위·출처 연결, 표 갈래, '이하 빈칸' 행, 쪽 넘김 표.
 
 표 제목은 라벨(figure_title)만 믿지 않는다 — 실측에서 일반 구역 제목에도 붙었다. '<표 n>'·'[도표 n]' 같은 패턴이 있고
-표 바로 위나 아래에 붙은 블록만 잇는다.
+표 바로 위나 아래에 붙은 블록, 또는 표 바로 위의 괄호로 감싼 한 줄 제목('[ 발령 기준 ]')만 잇는다. 그림은 바로 위·아래의
+'<그림 n>'·괄호 제목, 그다음 검출기가 그림 제목(figure_title)으로 본 줄을 잇는다.
 """
 from __future__ import annotations
 
@@ -18,6 +19,8 @@ CAPTION = re.compile(r"^\s*[\[<〈【(]?\s*(?:표|도표|table)\s*[\dⅠ-Ⅹ]+(?
 UNIT = re.compile(r"[(（]\s*단위\s*[:：]\s*([^)）]+?)\s*[)）]")
 SOURCE = re.compile(r"^\s*(?:※\s*)?(?:자료|출처)\s*[:：]")
 FIG_CAPTION = re.compile(r"^\s*[\[<〈【(]?\s*(?:그림|사진|figure|fig\.?)\s*\d", re.I)   # 그림 제목의 단위는 표에 붙이지 않는다
+_BRACKET = re.compile(r"\s*(?:\[[^\[\]\n]+\]|<[^<>\n]+>|〈[^〈〉\n]+〉|【[^【】\n]+】|「[^「」\n]+」)\s*")   # 괄호로 감싼 한 줄
+BRACKET_MIN, BRACKET_MAX = 4, 60   # 괄호 안 글자 수(띄어쓰기 뺀) — '[참고]'·'<붙임>' 꼬리표는 제목이 아니다
 _ROW = re.compile(r"<tr[^>]*>.*?(?=<tr[\s>]|</table>|$)", re.S | re.I)
 _CELL = re.compile(r"<t([dh])([^>]*)>(.*?)</t[dh]>", re.S | re.I)
 MAX_GAP = 15.0                # 표와 제목·단위·출처 블록 사이 세로 틈(pt)
@@ -147,12 +150,43 @@ def _link(page: Page, t: Block) -> None:
         elif not any(_dist(page, b, o) < mine for o in others):
             near.append((mine, side, b))
     near.sort(key=lambda x: (x[1] != "up", x[0]))                  # 위쪽 먼저, 가까운 것 먼저
-    cap = next((b for _, _, b in near if CAPTION.match(b.text)), None)
+    cap = next((b for _, _, b in near if CAPTION.match(b.text)), None) \
+        or next((b for _, side, b in near if side == "up" and bracket_title(b.text)), None)
     if cap:
         t.caption_id = cap.id
     for _, side, b in near:
         if not t.unit and (b is cap or (side == "up" and not FIG_CAPTION.match(b.text))) and (m := UNIT.search(b.text)):
             t.unit = m.group(1)
+
+
+def bracket_title(text: str | None) -> bool:
+    """괄호로 감싼 한 줄 제목('[ 국내 환자 발생 추이 ]'·'<발령 기준>') — 번호 없는 표·그림 제목(실측 test2.pdf). '(단위: …)'·
+    '(계속)' 줄과 짧은 꼬리표는 아니다."""
+    s = (text or "").strip()
+    if not _BRACKET.fullmatch(s) or _UNIT_LINE.fullmatch(s) or CONT.fullmatch("".join(s.split())):
+        return False
+    return BRACKET_MIN <= len("".join(s.split())) - 2 <= BRACKET_MAX
+
+
+def _link_figure(page: Page, f: Block) -> None:
+    """그림·차트 바로 위·아래(MAX_GAP 안)의 제목 — '<그림 n>'·괄호 제목을 검출기 그림 제목(figure_title) 줄보다, 위쪽을
+    아래쪽보다, 가까운 것을 먼저(그래프 바로 아래 축 이름도 figure_title 로 잡힌다 — 실측). 다른 표·그림에 더 가까운 블록은
+    그쪽 것이고, 나란한 그림 위의 한 제목은 함께 받는다."""
+    others = [o for o in page.blocks if o is not f and o.merged_into is None and o.type in ("table", "image", "chart")]
+    near = []
+    for b in page.blocks:
+        if b is f or not b.keep or b.merged_into or not b.text or b.type in ("table", "image", "chart"):
+            continue
+        up, down = _gap(page, b, f)
+        side = "up" if -3 <= up <= MAX_GAP else "down" if -3 <= down <= MAX_GAP else None
+        if side is None:
+            continue
+        mine = up if side == "up" else down
+        strong = bool(FIG_CAPTION.match(b.text) or bracket_title(b.text))
+        if (strong or b.type == "figure_title") and not any(_dist(page, b, o) < mine for o in others):
+            near.append((not strong, side != "up", mine, b))
+    if near:
+        f.caption_id = min(near, key=lambda x: x[:3])[3].id
 
 
 def _route(t: Block, rows: list[list[Cell]]) -> tuple[str, str | None]:
@@ -210,6 +244,9 @@ def tables(doc: Document) -> Document:
                 t.header_rows, t.html = n, _mark_th(t.html, n)
             t.route, t.route_reason = _route(t, rows)
             _link(page, t)
+        for f in page.blocks:
+            if f.type in ("image", "chart") and f.keep and f.merged_into is None:
+                _link_figure(page, f)
     return doc
 
 

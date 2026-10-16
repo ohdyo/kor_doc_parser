@@ -177,3 +177,22 @@ def test_caption_above_chart_and_banded_repeat_do_not_cut_section():
                 _page(2, ("text", (380, 30, 530, 42), "2026 정보보안 업무계획"), T("Ⅱ. 사업 내용", 60),
                       I("○ 운영비", 82, 100), I("○ 관리비", 82, 130)))
     assert _texts(band) == [1, 2, None, 2, 2]
+
+
+def test_other_circled_numbers_nest_under_circle_items():
+    doc = _run(_page(1, T("□ 조치사항", 40), I("○ 경보 발령 시", 63, 70), I("➀ 군집사례 기준: 홍보", 83, 90),
+                     I("➁ 매개모기 기준: 방제", 83, 110)))
+    assert _levels(doc) == [None, 1, 2, 2]
+
+
+def test_attachment_list_is_one_list():
+    doc = _run(_page(1, ("doc_title", (150, 40, 450, 60), "보도 제목"), I("- 요약 하나", 68, 80), I("본문 문단입니다.", 57, 110),
+                     I("<붙임> 1. 첫째 붙임", 57, 140), I("2. 둘째 붙임", 113, 160), I("3. 셋째 붙임", 113, 180)))
+    assert _levels(doc)[1:] == [1, None, 1, 1, 1]                             # 꼬리표 폭만큼 들여 썼어도 하위가 아니다
+    assert doc.pages[0].blocks[4].provenance[-1] == {"rule": "list_level", "by": "attachment"}
+
+
+def test_attachment_label_alone_opens_section():
+    doc = _run(_page(1, T("1. 개요", 40), I("가. 첫 항목", 80, 70), I("붙임", 70, 100, w=40), I("1. 계획서 1부.", 120, 100),
+                     I("2. 명단 1부.  끝.", 120, 120)))
+    assert _levels(doc) == [None, 1, None, 1, 1]                              # 꼬리표만 있는 블록은 붙임 구역을 연다(headings)
