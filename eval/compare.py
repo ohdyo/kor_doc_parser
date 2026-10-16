@@ -1,6 +1,6 @@
 """비교군 시험 — 같은 PDF 를 비교 파서로 돌리고, 정답(좌표·라벨)과 텍스트 레이어로 같은 지표를 잰다(기획서 8.1 일부).
 
-    python eval/compare.py test.pdf --golden eval/golden/test_pdf.yaml
+    python eval/compare.py test2.pdf --golden eval/golden/test2_pdf.yaml
 
 비교군 출력은 out/<문서 해시>/compare/ 에 두고 다시 쓴다(--rerun 이면 다시 돌린다). 보고에는 개수·비율만 낸다.
 """
@@ -130,16 +130,17 @@ def run_docling(pdf: Path, settings) -> dict:
         prov = item.prov[0]
         box = list(prov.bbox.to_top_left_origin(doc.pages[prov.page_no].size.height).as_tuple())
         body = item.content_layer == ContentLayer.BODY
-        if isinstance(item, TableItem):
-            b = _blk("table", box, body, " ".join(c.text for c in item.data.table_cells), item.label.value)
-            b["grid"] = [item.data.num_rows, item.data.num_cols]
-            b["header_rows"] = next((i for i, row in enumerate(item.data.grid)
-                                     if not row or not all(c.column_header for c in row)), len(item.data.grid))
+        if isinstance(item, TableItem | PictureItem):
+            if isinstance(item, TableItem):
+                b = _blk("table", box, body, " ".join(c.text for c in item.data.table_cells), item.label.value)
+                b["grid"] = [item.data.num_rows, item.data.num_cols]
+                b["header_rows"] = next((i for i, row in enumerate(item.data.grid)
+                                         if not row or not all(c.column_header for c in row)), len(item.data.grid))
+            else:
+                b = _blk("figure", box, body, "", item.label.value)
             if item.captions and (cap := item.captions[0].resolve(doc)).prov:
                 cp = cap.prov[0]
                 b["caption_bbox"] = list(cp.bbox.to_top_left_origin(doc.pages[cp.page_no].size.height).as_tuple())
-        elif isinstance(item, PictureItem):
-            b = _blk("figure", box, body, "", item.label.value)
         else:
             b = _blk("text", box, body, getattr(item, "text", ""), item.label.value, **_docling_struct(item, doc))
         pages.setdefault(prov.page_no, []).append(b)
@@ -209,7 +210,7 @@ def load_kdp(doc_dir: Path) -> dict:
             if any(pv.get("rule") == "join_wrapped" for pv in b.get("provenance") or []):
                 blk["joined"] = True
             pages[p["page_no"]].append(blk)
-    return {"seconds": read_json(doc_dir / "raw" / "engine.json").get("seconds"), "pages": pages}
+    return {"seconds": read_json(doc_dir / "raw" / "engine.json").get("seconds"), "pages": pages, "meta": d.get("meta") or {}}
 
 
 RUNNERS = {"textlayer": run_textlayer, "docling": run_docling, "paddle_default": run_paddle_default}
@@ -353,9 +354,10 @@ def evaluate(segs: dict, golden: dict, run: dict) -> dict:
                                                    _center_in(bc, [[gc[0] - 3, gc[1] - 3, gc[2] + 3, gc[3] + 3]]))
     junk_text = sum(len(re.findall(r"\\n(?![A-Za-z])", b["text"])) + len(re.findall(r"\$[^$\n]*[\\^_][^$\n]*\$", b["text"]))
                     for bs in pages.values() for b in bs if b["body"])           # 모델 잡문자 꼴만 — 영문자 앞 \n(경로)·금액 $ 는 세지 않는다
-    fig_chars = sum(len(norm(b["text"])) for f in figs for b in pages.get(f["page"], [])
+    legacy = [f for f in figs if "kind" not in f]   # 종류 없는 그림 = 그림으로 된 표(test.pdf) — 읽을수록 좋다
+    fig_chars = sum(len(norm(b["text"])) for f in legacy for b in pages.get(f["page"], [])
                     if b["body"] and b["bbox"] and not b.get("joined")
-                    and _inter(f["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"]))   # 그림 감싼 문단을 이은 블록은 빼고
+                    and _inter(f["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"])) if legacy else None   # 그림 감싼 문단을 이은 블록은 빼고
     heads, items = golden.get("headings", []), golden.get("lists", [])
     found = level_ok = 0
     for g in heads:                                 # 겹치는 블록이 제목 역할이면 찾음, 가장 많이 겹치는 제목 블록의 수준을 본다
@@ -369,10 +371,43 @@ def evaluate(segs: dict, golden: dict, run: dict) -> dict:
             continue
         whole = _iou(cands[0]["bbox"], g["bbox"]) >= 0.5 or _inter(cands[0]["bbox"], g["bbox"]) >= COVER * _area(g["bbox"])
         list_ok += all(b.get("list_level") == g["level"] for b in (cands[:1] if whole else cands))
-    return {"seconds": run.get("seconds"), "n_pages": len(golden["pages"]), "text": text, "leak": leak, "junk_removed": removed,
-            "tables": {"detected": det, "grid_ok": grid, "header_ok": head, "caption_ok": cap, "total": len(tables)},
-            "figure_chars": fig_chars, "junk_text": junk_text,
-            "headings": {"found": [found, len(heads)], "level_ok": [level_ok, found]}, "lists": {"level_ok": [list_ok, len(items)]}}
+    out = {"seconds": run.get("seconds"), "n_pages": len(golden["pages"]), "text": text, "leak": leak, "junk_removed": removed,
+           "tables": {"detected": det, "grid_ok": grid, "header_ok": head, "caption_ok": cap, "total": len(tables)},
+           "figure_chars": fig_chars, "junk_text": junk_text,
+           "headings": {"found": [found, len(heads)], "level_ok": [level_ok, found]}, "lists": {"level_ok": [list_ok, len(items)]}}
+    if kinds := [f for f in figs if "kind" in f]:   # 아래 지표는 정답에 그 정보가 있을 때만 낸다
+        out["figures"] = _figures(pages, kinds)
+    if lines := [(t["page"], s) for t in golden.get("image_text", []) for s in map(norm, t["lines"]) if len(s) >= MIN_SEG]:
+        out["image_text"] = [sum(present(s, body.get(p) or "") for p, s in lines), len(lines)]
+    if gm := golden.get("meta"):
+        m = run.get("meta")
+        out["meta"] = None if m is None else [sum(" ".join(str(m.get(k, "")).split()) == " ".join(str(v).split())
+                                                  for k, v in gm.items()), len(gm)]
+    return out
+
+
+def _fig_blocks(pages: dict, g: dict) -> list[dict]:
+    """정답 그림 자리의 출력 그림 블록 — IoU 0.5 이상 하나, 아니면 대부분 정답 안에 든 조각들(각각 PART 이상)이 함께 COVER 이상."""
+    figs = [b for b in pages.get(g["page"], []) if b["body"] and b["bbox"] and b["kind"] == "figure"]
+    one = sorted((b for b in figs if _iou(b["bbox"], g["bbox"]) >= 0.5), key=lambda b: -_iou(b["bbox"], g["bbox"]))
+    if one:
+        return one
+    parts = [b for b in figs if _inter(b["bbox"], g["bbox"]) >= max(PART * _area(g["bbox"]), 0.5 * _area(b["bbox"]))]
+    return parts if sum(_inter(b["bbox"], g["bbox"]) for b in parts) >= COVER * _area(g["bbox"]) else []
+
+
+def _figures(pages: dict, figs: list[dict]) -> dict:
+    """그림 찾음·제목 연결(제목 있는 그림만)·그래프·사진·지도 속 글자가 글 블록으로 본문에 섞인 글자 수(그림 블록이 품은 글자는 빼고)."""
+    found = cap = 0
+    for g in figs:
+        hits = _fig_blocks(pages, g)
+        found += bool(hits)
+        if (gc := g.get("caption")) is not None:
+            cap += any(b.get("caption_bbox") and _center_in(b["caption_bbox"], [[gc[0] - 3, gc[1] - 3, gc[2] + 3, gc[3] + 3]])
+                       for b in hits)
+    leak = sum(len(norm(b["text"])) for g in figs if g["kind"] in ("chart", "photo", "map") for b in pages.get(g["page"], [])
+               if b["body"] and b["bbox"] and b["kind"] == "text" and _inter(g["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"]))
+    return {"found": [found, len(figs)], "caption_ok": [cap, sum(g.get("caption") is not None for g in figs)], "leak_chars": leak}
 
 
 # ---- 보고 ----
@@ -391,14 +426,27 @@ def render(report: dict) -> str:
     rows += [("표 검출(IoU≥0.5)", lambda r: _frac([r["tables"]["detected"], r["tables"]["total"]])),
              ("표 행·열 일치", lambda r: _frac([r["tables"]["grid_ok"], r["tables"]["total"]])),
              ("표 머리행 일치", lambda r: _frac([r["tables"].get("header_ok", 0), r["tables"]["total"]])),
-             ("표 제목 연결", lambda r: _frac([r["tables"].get("caption_ok", 0), r["tables"]["total"]])),
-             ("제목 찾음", lambda r: _frac(r.get("headings", {}).get("found", [0, 0]))),
+             ("표 제목 연결", lambda r: _frac([r["tables"].get("caption_ok", 0), r["tables"]["total"]]))]
+
+    def has(key):                                   # 정답에 그 정보가 있을 때만 줄을 낸다
+        return any(key in r for r in report.values())
+
+    if has("figures"):
+        rows += [("그림 찾음", lambda r: _frac(r["figures"]["found"]) if "figures" in r else "—"),
+                 ("그림 제목 연결(제목 있는 그림)", lambda r: _frac(r["figures"]["caption_ok"]) if "figures" in r else "—"),
+                 ("그래프·사진·지도 글자가 본문 글로 섞임(글자 수)",
+                  lambda r: str(r["figures"]["leak_chars"]) if "figures" in r else "—")]
+    rows += [("제목 찾음", lambda r: _frac(r.get("headings", {}).get("found", [0, 0]))),
              ("제목 수준 일치(찾은 제목 중)", lambda r: _frac(r.get("headings", {}).get("level_ok", [0, 0]))),
              ("항목 수준 일치", lambda r: _frac(r.get("lists", {}).get("level_ok", [0, 0]))),
              ("출력 잡문자(글자 그대로의 \\n·LaTeX)", lambda r: str(r.get("junk_text", 0))),
-             ("그림 영역에서 읽은 글자 수", lambda r: str(r["figure_chars"])),
-             ("처리 시간(쪽당)", lambda r: f"{r['seconds']:.0f}초 ({r['seconds'] / r['n_pages']:.1f}초)"
-              if r["seconds"] is not None else "—")]
+             ("그림 영역에서 읽은 글자 수", lambda r: "—" if r["figure_chars"] is None else str(r["figure_chars"]))]
+    if has("image_text"):
+        rows.append(("그림 속 글자 읽음(포스터 줄)", lambda r: _frac(r["image_text"]) if "image_text" in r else "—"))
+    if has("meta"):
+        rows.append(("문서 정보 맞음(제목·기관·날짜)", lambda r: _frac(r["meta"]) if r.get("meta") else "—"))
+    rows.append(("처리 시간(쪽당)", lambda r: f"{r['seconds']:.0f}초 ({r['seconds'] / r['n_pages']:.1f}초)"
+                 if r["seconds"] is not None else "—"))
     out = ["| 지표 | " + " | ".join(NAMES.get(n, n) for n in names) + " |", "|---" * (len(names) + 1) + "|"]
     out += ["| " + label + " | " + " | ".join(fn(report[n]) for n in names) + " |" for label, fn in rows]
     return "\n".join(out)
