@@ -149,8 +149,8 @@ def _cover_score(page: Page, idx: int, n_pages: int, first_blank: bool) -> float
             or any(b.type in ("table", "content") for b in texts)):
         return 0.0
     titles = title_blocks(page)
-    dates = date_blocks(texts) or [b for b in page.blocks if b.merged_into is None and b.type == "doc_meta"
-                                   and (b.meta or {}).get("date")]   # 보도 일시 칸을 메타로 옮겼어도 표지의 날짜다
+    dates = date_blocks(texts + [b for b in page.blocks if b.merged_into is None and b.type == "doc_meta"
+                                 and (b.meta or {}).get("date")])   # 메타로 옮긴 보도 일시 칸도 — 날짜만 든 줄일 때만
     rest = [b for b in texts if b not in titles and b not in dates[:1] and not DOC_NO.search((b.text or "").strip())]
     found = [_body_lines(b.text) for b in rest]
     lines, sentence = sum(n for n, _ in found), any(s for _, s in found)

@@ -16,7 +16,7 @@ import math
 import re
 import unicodedata
 
-from ..classify.blocks import sentence_like
+from ..classify.blocks import appendix_title, sentence_like
 from ..classify.pages import is_toc_title
 from ..geometry import local, page_size
 from ..schema import Block, Document, Page
@@ -64,6 +64,7 @@ _BULLET = re.compile(r"([□■◻◼▣❑❒☐○●◦❍◎•·∙・‧�
 _SAME = {"ㅇ": "○", "o": "○", "O": "○", "–": "-", "—": "-", "―": "-", "‐": "-", "−": "-",
          "∙": "·", "・": "·", "‧": "·", "⋅": "·"}                     # 같은 기호의 변형
 _ORDER = "□○-·"                  # 보고서체 기호 차례(□ → ○ → - → ·) — 글자 모양이 같아도 처음 나온 차례대로 쌓는다(_place)
+CIRCLED = {"①", "❶", "㉮"}         # 원 숫자 체계 — 공문 8단계의 아래쪽·요약 상자 핵심 줄(❶ …)
 _MISREAD = "☐"                   # VLM 이 □·○ 를 잘못 읽어 낸 기호(실측) — 뒤에 바로 읽힌 보고서체 기호가 그 자리 형제가 된다(_place)
 # 순서가 문서마다 거의 같은 위쪽 체계 — 처음 나온 이 체계가 자기보다 아래 서열 밑으로 들어가지 않게 한다(place)
 RANK = {k: i for i, k in enumerate(("편", "장", "절", "관", "조", "Ⅰ", "Ⅰ-1", "Ⅰ-1-1",
@@ -158,12 +159,15 @@ def _bullet(text: str) -> bool:
 
 
 def _place(stack: list, kind: str, text: str, h: float | None, x: float | None) -> tuple[int, str]:
-    """place() 에 글자 모양을 더한다(스택 항목 = (체계, 글자, 줄 높이, x)) → (자리, 쌓을 체계). 처음 나온 RANK 체계는 그보다
+    """place() 에 글자 모양을 더한다(스택 항목 = (체계, 글자, 줄 높이, x)) → (자리, 쌓을 체계). 처음 나온 RANK 체계와 □·○ 는
+    원 숫자 제목(요약 상자의 '❶ …' 핵심 줄) 밑으로 넣지 않는다. 처음 나온 RANK 체계는 그보다
     확실히 작은 글자의 RANK 밖 제목('□ 요약' 상자·번호 없는 제목) 위로 올린다. 처음 나온 낯선 기호(☐ 등)는 글자 높이·x 가 같은
     기호 제목이 스택에 하나뿐이면 그 형제로 두고 그 자리 기호를 물려받는다 — VLM 이 ○·□ 를 ☐ 로 읽는다(실측). 보고서체
     기호(□ ○ - ·)는 처음 나온 차례 그대로 — 다만 글자 높이·x 가 같은 스택 제목이 잘못 읽힌 ☐ 하나뿐이면 그 형제(제 기호로)."""
     kinds = [s[0] for s in stack]
     t = place(kinds, kind)
+    if kind not in kinds and (kind in RANK or kind in _ORDER[:2]):   # 처음 나온 장·절 번호·□○ 는 원 숫자 제목 밑으로 넣지 않는다
+        t = next((i for i, k in enumerate(kinds[:t]) if k in CIRCLED), t)
     if kind in kinds or h is None:
         return t, kind
     if kind in RANK:
@@ -237,7 +241,7 @@ def _candidates(doc: Document) -> set[str]:
             fig = b.type == "figure_title"
             if (b.type not in TITLE_TYPES and not fig) or not text or b.id in caps \
                     or CONT.fullmatch("".join(text.split())) \
-                    or (b.type != "doc_title" and sentence_like(text) and not _LABEL_TITLE.match(text)):   # '붙임 2 …' 제목은 문장 꼴이어도 뿌리
+                    or (b.type != "doc_title" and sentence_like(text) and not appendix_title(b)):   # 합친 '붙임 2 …' 제목은 문장 꼴이어도 뿌리
                 continue
             nxt = next((x for x in live[i + 1:] if not _UNIT_ROW.match(x.text or "")
                         and not CONT.fullmatch("".join((x.text or "").split()))), None)

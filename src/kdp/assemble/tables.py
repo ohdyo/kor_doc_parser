@@ -21,6 +21,7 @@ SOURCE = re.compile(r"^\s*(?:※\s*)?(?:자료|출처)\s*[:：]")
 FIG_CAPTION = re.compile(r"^\s*[\[<〈【(]?\s*(?:그림|사진|figure|fig\.?)\s*\d", re.I)   # 그림 제목의 단위는 표에 붙이지 않는다
 _BRACKET = re.compile(r"\s*(?:\[[^\[\]\n]+\]|<[^<>\n]+>|〈[^〈〉\n]+〉|【[^【】\n]+】|「[^「」\n]+」)\s*")   # 괄호로 감싼 한 줄
 BRACKET_MIN, BRACKET_MAX = 4, 60   # 괄호 안 글자 수(띄어쓰기 뺀) — '[참고]'·'<붙임>' 꼬리표는 제목이 아니다
+_NOTE_IN = re.compile(r"\s*(?:단\s*위\s*[:：]|(?:개\s*정|신\s*설|삭\s*제|전\s*문\s*개\s*정|본\s*조\s*신\s*설|종\s*전|시\s*행)(?![가-힣]))")   # 괄호 안 단위·개정 표시('【단위: 천원】'·'<개정 2024. 1. 1.>')
 _TAG_ONLY = re.compile(r"(?:붙\s*임|별\s*첨|첨\s*부|부\s*록|별\s*지|별\s*표|참\s*고)(?:\s*자\s*료)?\s*(?:제\s*)?"
                        r"(?:[\dⅠ-Ⅻ]+(?:\s*[-–]\s*\d+)*)?\s*(?:호)?\s*(?:서\s*식)?")   # 괄호 안이 꼬리표뿐('[별지 제1호서식]'·'[붙임 1-1]')
 _ROW = re.compile(r"<tr[^>]*>.*?(?=<tr[\s>]|</table>|$)", re.S | re.I)
@@ -166,17 +167,19 @@ def bracket_title(text: str | None) -> bool:
     '(계속)' 줄과 꼬리표('[참고]'·'[별지 제1호서식]'·'[붙임 1-1]' — 붙임 구역 뿌리다)는 아니다."""
     s = (text or "").strip()
     if not _BRACKET.fullmatch(s) or _UNIT_LINE.fullmatch(s) or CONT.fullmatch("".join(s.split())) \
-            or _TAG_ONLY.fullmatch(s[1:-1].strip()):
+            or _TAG_ONLY.fullmatch(s[1:-1].strip()) or _NOTE_IN.match(s[1:-1]):
         return False
     return BRACKET_MIN <= len("".join(s.split())) - 2 <= BRACKET_MAX
 
 
 def _link_figure(page: Page, f: Block) -> None:
     """그림·차트 바로 위·아래(MAX_GAP 안)의 제목 — '<그림 n>'(아래 먼저 — 관례) → 괄호 제목(위 먼저) → 검출기 그림 제목
-    (figure_title, 위 먼저 — 그래프 바로 아래 축 이름도 figure_title 로 잡힌다, 실측) 차례로, 같으면 가까운 것. '<그림 2>는 …'
+    (figure_title, 위 먼저 — 그래프 바로 아래 축 이름도 figure_title 로 잡힌다, 실측 — 읽기 순서로도 바로 앞뒤일 때만) 차례로,
+    같으면 가까운 것. '<그림 2>는 …'
     같은 본문 참조와 괄호로 감싼 구역·문서 제목 라벨(paragraph_title·doc_title)은 받지 않는다. 다른 표·그림에 더 가까운
     블록은 그쪽 것이고, 나란한 그림 위의 한 제목은 함께 받는다."""
     others = [o for o in page.blocks if o is not f and o.merged_into is None and o.type in ("table", "image", "chart")]
+    order = [o for o in page.blocks if o.keep and o.merged_into is None]
     near = []
     for b in page.blocks:
         if b is f or not b.keep or b.merged_into or not b.text or b.type in ("table", "image", "chart"):
@@ -188,10 +191,18 @@ def _link_figure(page: Page, f: Block) -> None:
         mine = up if side == "up" else down
         fig = bool(FIG_CAPTION.match(b.text) and appendage(b.text))
         bracket = b.type in ("text", "figure_title") and bracket_title(b.text)
-        if (fig or bracket or b.type == "figure_title") and not any(_dist(page, b, o) < mine for o in others):
+        weak = not (fig or bracket) and b.type == "figure_title" and _beside(order, b, f)   # 라벨뿐인 줄은 읽기 순서로도 바로 앞뒤
+        if (fig or bracket or weak) and not any(_dist(page, b, o) < mine for o in others):
             near.append((0 if fig else 1 if bracket else 2, side != ("down" if fig else "up"), mine, b))
     if near:
         f.caption_id = min(near, key=lambda x: x[:3])[3].id
+
+
+def _beside(order: list[Block], a: Block, b: Block) -> bool:
+    """읽기 순서로 바로 앞뒤 — 사이의 '(단위: …)' 줄은 건너뛴다(headings._candidates 와 같은 기준 — 그림 옆 단의 글을 건너
+    뛰어 구역 제목을 잇지 않는다)."""
+    i, j = sorted((order.index(a), order.index(b)))
+    return all(_unit_of(x) for x in order[i + 1:j])
 
 
 def _route(t: Block, rows: list[list[Cell]]) -> tuple[str, str | None]:

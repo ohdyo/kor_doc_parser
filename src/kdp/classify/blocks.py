@@ -30,6 +30,7 @@ ITEM = re.compile(r"^\s*(?:[□■○●◦▪ㅇ◆◇▶►➢•\-–·*]|\d{
 APPENDIX_TAG = re.compile(r"[\[<〈【(「『]?\s*(?:붙\s*임|별\s*첨|첨\s*부|부\s*록|별\s*지)\s*(?:제\s*)?(?:\d{1,2}|[Ⅰ-Ⅻ]|[A-Z])"
                           r"\s*(?:호\s*)?(?:서\s*식\s*)?[\]>〉】)」』]?\s*\.?")
 _TAG_HEAD = re.compile(APPENDIX_TAG.pattern + r"(?:\s+|$)")                 # 꼬리표로 시작하는 줄(뒤는 띄어쓰기·끝)
+_CHAPTER = re.compile(r"\s*(?:[Ⅰ-Ⅻ](?:\s*[.)]|\s)|[IVX]{1,4}\s*[.)]|제\s*\d{1,3}\s*[편장절관조])")   # 장·절 번호 제목 — 꼬리표에 합치지 않는다
 _TAG_NO = re.compile(r"[\[<〈【(「『]?\s*(붙\s*임|별\s*첨|첨\s*부|부\s*록|별\s*지)\s*(?:제\s*)?(\d{1,2}|[Ⅰ-Ⅻ]|[A-Z])(?!\d)")   # 꼬리표 이름·번호
 _ATTACH_LIST = re.compile(r"\d\s*부\s*\.|\d\s*부\s*$|끝\s*\.?\s*$")         # '붙임 1. 계획 1부. 끝.' — 붙임 목록 줄
 TAG_GAP = 0.1               # 꼬리표와 옆 제목 사이 가로 틈 상한(논리 쪽 너비 대비, A4 약 60pt)
@@ -56,6 +57,11 @@ def _keep_aside(b: Block, cfg: Classify) -> bool:
     return bool(_NOTE.match(b.text or "")) or sentences(b.text) >= cfg.aside_keep_min_sentences
 
 
+def appendix_title(b: Block) -> bool:
+    """_tag_titles 가 꼬리표와 합쳤거나 머리말에서 돌린 '붙임 N …' 제목 — '붙임 1 서식에 따라 … 바랍니다.' 같은 안내 문장 라벨은 아니다."""
+    return any(p.get("rule") == "appendix_title" for p in b.provenance or [])
+
+
 def _key(text: str | None) -> str:
     return "".join((text or "").split())
 
@@ -78,11 +84,13 @@ def _running(doc: Document) -> tuple[set[str], set[str]]:
     return run, {t for p in pages for k, text in p.items() if k in run and (t := _tag_key(text))}
 
 
-def _tag_titles(page: Page, running: tuple[set[str], set[str]], seen: set[str]) -> None:
+def _tag_titles(page: Page, running: tuple[set[str], set[str]], seen: set[str], titles: set[str]) -> None:
     """'붙임 1' 꼬리표와 그 붙임의 제목 — 쪽 맨 위 제목 상자를 검출기가 머리말(header)로 잡아 버리던 것(실측 test2.pdf, 쪽마다
     글이 다르다). 머리말이 꼬리표로 시작하고 그 붙임 번호가 처음 나온 것(앞쪽·이 쪽 제목에도, 되풀이 머리말에도 없음)이면
-    제목으로 돌린다. 꼬리표 블록 오른쪽 같은 줄 블록(한 줄·짧고 항목·번호·표·그림 제목 꼴이 아님 — 상자가 꼬리표와 조금
-    겹쳐도 오른쪽으로 더 뻗으면)의 글은 꼬리표 블록에 합친다. 문서 제목(doc_title)은 문서 제목으로 둔다. seen 에 이 쪽 꼬리표를 더한다."""
+    제목으로 돌린다 — 꼬리표 뒤 제목 글이 앞쪽 제목·머리말과 같아도 되풀이다. 꼬리표 블록 오른쪽 같은 줄 블록(한 줄·짧고
+    항목·번호·장 제목·표·그림 제목 꼴이 아님 — 상자가 꼬리표와 조금
+    겹쳐도 오른쪽으로 더 뻗으면)의 글은 꼬리표 블록에 합친다. 문서 제목(doc_title)은 문서 제목으로 둔다. seen·titles 에 이 쪽
+    꼬리표·제목 글(꼬리표를 뗀 _key)을 더한다."""
     run, run_tags = running
     live = [b for b in page.blocks if b.merged_into is None and (b.text or "").strip()]
     here = {k for b in live if b.keep and b.type in ("paragraph_title", "doc_title", "text") and (k := _tag_key(b.text))}
@@ -90,7 +98,7 @@ def _tag_titles(page: Page, running: tuple[set[str], set[str]], seen: set[str]) 
         s = " ".join(b.text.split())
         if b.type == "header" and (k := _tag_key(s)) and k not in seen | here | run_tags and _masked(s) not in run \
                 and "\n" not in b.text.strip() and (m := _TAG_HEAD.match(s)) and not _ATTACH_LIST.search(s) \
-                and len(_key(s[m.end():])) <= TAG_TITLE_MAX:
+                and len(_key(s[m.end():])) <= TAG_TITLE_MAX and _key(s[m.end():]) not in titles:
             b.provenance = (b.provenance or []) + [{"rule": "appendix_title", "type": b.type}]
             b.type = "paragraph_title"
     width = page_size(page)[0]
@@ -108,7 +116,8 @@ def _tag_titles(page: Page, running: tuple[set[str], set[str]], seen: set[str]) 
             s = " ".join(b.text.split())
             if min(ty1, y1) - max(ty0, y0) >= 0.5 * min(ty1 - ty0, y1 - y0) and x0 >= tx0 - 2 and x1 > tx1 \
                     and x0 - tx1 <= TAG_GAP * width and "\n" not in b.text.strip() and len(s.replace(" ", "")) <= TAG_TITLE_MAX \
-                    and not (ITEM.match(s) or APPENDIX_TAG.match(s) or CAPTION.match(s) or FIG_CAPTION.match(s) or bracket_title(s)
+                    and not (ITEM.match(s) or _CHAPTER.match(s) or APPENDIX_TAG.match(s) or CAPTION.match(s) or FIG_CAPTION.match(s)
+                             or bracket_title(s)
                              or _ATTACH_LIST.search(s)):                  # 붙임 목록 줄('… 1부.  끝.')은 제목이 아니다
                 right.append((x0, b))
         if not right:
@@ -122,6 +131,10 @@ def _tag_titles(page: Page, running: tuple[set[str], set[str]], seen: set[str]) 
         b.keep, b.drop_reason, b.merged_into, b.text = False, "merged", tag.id, None   # 글자는 대표에만(병합 묶음 규약)
     seen.update(k for b in page.blocks if b.keep and b.merged_into is None
                 and b.type in ("paragraph_title", "doc_title", "text") and (k := _tag_key(b.text)))
+    for b in page.blocks:                              # 앞쪽 제목·머리말 글 — 첫 쪽에 꼬리표 없이 제목만 둔 붙임의 뒤쪽 머리말
+        if b.merged_into is None and b.text and (b.type == "header" or b.keep and b.type in ("paragraph_title", "doc_title")):
+            s = " ".join(b.text.split())
+            titles.add(_key(s[m.end():] if (m := _TAG_HEAD.match(s)) else s))
 
 
 def classify_blocks(doc: Document, cfg: Classify) -> Document:
@@ -130,12 +143,12 @@ def classify_blocks(doc: Document, cfg: Classify) -> Document:
         drop["footnote"] = "footnote"
         drop["vision_footnote"] = "footnote"
     doc = doc.model_copy(deep=True)
-    running, seen = _running(doc), set()
+    running, seen, titles = _running(doc), set(), set()
     for page in doc.pages:
-        _tag_titles(page, running, seen)
+        _tag_titles(page, running, seen, titles)
         for b in page.blocks:
             if b.merged_into is None and b.type == "paragraph_title" and sentence_like(b.text) \
-                    and not _TAG_HEAD.match(" ".join(b.text.split())):    # '붙임 2 …' 제목은 문장 꼴이어도 붙임 뿌리다
+                    and not appendix_title(b):        # 꼬리표와 합친·머리말에서 돌린 '붙임 2 …' 제목은 문장 꼴이어도 붙임 뿌리
                 b.provenance = (b.provenance or []) + [{"rule": "title_sentence", "type": b.type}]
                 b.type = "text"                      # 문장이 문단 제목 라벨을 받았다 — 섹션 경로·표지 제목이 되지 않게
                 continue

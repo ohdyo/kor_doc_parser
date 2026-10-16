@@ -426,3 +426,20 @@ def test_press_cover_is_still_cover():
                     _page(2, BODY)))
     assert not doc.pages[0].keep and doc.pages[0].page_class == "cover"        # 메타로 옮긴 날짜 칸도 표지의 날짜
     assert doc.meta["date"] == "2026-06-22"
+
+
+def test_press_date_only_in_masthead_band():
+    doc = _run(_doc(_page(1, ("header", (240, 60, 330, 74), "보도자료"), ("header", (60, 90, 110, 104), "보도시점"),
+                          ("text", (115, 90, 260, 104), "2026. 6. 29.(월) 12:00"),
+                          ("doc_title", (100, 120, 500, 150), "취약계층에 여름철 방역물품 무료 배포"),
+                          ("text", (70, 170, 520, 184), "배포 일시: 2026. 7. 6.(월) 10:00 ~ 17:00"), BODY)))
+    b = doc.pages[0].blocks
+    assert b[4].keep and b[4].type == "text" and doc.meta["date"] == "2026-06-29"   # 제목 아래 안내 줄은 본문
+
+
+def test_photo_press_page_is_not_cover():
+    doc = _run(_doc(_page(1, ("header", (60, 90, 110, 104), "보도시점"), ("text", (115, 90, 260, 104), "2026. 6. 22.(월) 12:00"),
+                          ("doc_title", (100, 120, 500, 150), "질병관리청장, 방제 현장 점검"),
+                          ("image", (80, 200, 520, 500), None), ("text", (80, 510, 520, 524), "▲ 방제 현장 점검 모습")),
+                    _page(2, BODY)))
+    assert doc.pages[0].keep and doc.pages[0].page_class != "cover"           # 시각이 붙은 날짜 칸은 표지 날짜가 아니다
