@@ -480,3 +480,12 @@ def test_figure_caption_order():
     doc = tables(_doc(("text", (100, 100, 500, 114), "<그림 2>는 최근 5년간 환자 수를 나타낸 것이다."),
                       ("chart", (100, 120, 500, 300), None), ("figure_title", (180, 304, 420, 316), "<그림 2> 연도별 환자 수")))
     assert doc.pages[0].blocks[1].caption_id == "p1.b03"                     # 그림을 가리키는 본문 문장은 제목이 아니다
+
+
+def test_numbered_section_title_beside_figure_is_not_caption():
+    doc = tables(_doc(("figure_title", (60, 100, 540, 114), "2. 시스템 구성"), ("text", (60, 122, 290, 300), "왼쪽 단 글"),
+                      ("image", (300, 122, 540, 300), None)))
+    assert doc.pages[0].blocks[2].caption_id is None                          # 읽기 순서로 사이에 글이 있다
+    doc = tables(_doc(("text", (60, 100, 540, 114), "【단위: 천원】"), ("table", (60, 120, 540, 200), T),
+                      ("text", (60, 300, 540, 314), "<개정 2024. 1. 1.>"), ("table", (60, 320, 540, 400), T)))
+    assert [b.caption_id for b in doc.pages[0].blocks if b.type == "table"] == [None, None]   # 괄호 안 단위·개정 표시

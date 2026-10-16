@@ -627,3 +627,13 @@ def test_sentence_like_doc_title_is_level_zero():
 def test_other_circled_numbers():
     assert numbering("➀ 군집사례 기준") == ("①", "➀") and numbering("➁ 매개모기 기준") == ("①", "➁")   # 글자층의 다른 원 숫자
     assert numbering("❶ 개요") == ("❶", "❶") and numbering("➋ 현황") == ("❶", "➋")                 # 검은 원 숫자는 다른 단계
+
+
+def test_summary_circled_lines_do_not_hold_sections():
+    for marks in (("❶", "❷"), ("➀", "➁"), ("①", "②")):
+        for first, second in (("□ 추진 배경", "□ 추진 과제"), ("Ⅰ. 추진 배경", "Ⅱ. 추진 과제")):
+            doc = headings(_doc(_page(1, T(f"{marks[0]} 감시 주기 단축", 60, 14), T(f"{marks[1]} 예방약 배부", 80, 14),
+                                      T(first, 120, 15), X("본문", 140), T(second, 200, 15), X("본문", 220))))
+            b = _by_text(doc)
+            assert (b[first].heading_level, b[second].heading_level) == (1, 1), (marks, first)   # 요약 핵심 줄 밑으로 넣지 않는다
+            assert b[first].section_path == [first], (marks, first)

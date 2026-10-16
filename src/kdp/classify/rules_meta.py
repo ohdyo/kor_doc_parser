@@ -327,12 +327,14 @@ def _issuer_line(page: Page, heads: list[Block]) -> None:
 
 def _press_dates(page: Page) -> None:
     """보도자료 머리의 보도·배포 일시 → doc_meta(date)(실측 test2.pdf — '보도시점' 꼬리표는 머리말로 버려지고 옆 날짜 칸만
-    글로 남았다). 첫 논리 페이지 위쪽에서 꼬리표 블록(버린 것도) 같은 줄 바로 오른쪽 칸이 날짜로 시작하는 짧은 글 블록이거나,
+    글로 남았다). 첫 논리 페이지의 보도자료 머리 띠(문서 제목 위 — 제목 아래 '배포 일시: …' 안내 줄·기사 날짜는 본문)에서
+    꼬리표 블록(버린 것도) 같은 줄 바로 오른쪽 칸이 날짜로 시작하는 짧은 글 블록이거나,
     꼬리표 뒤에 날짜가 바로 오는 글 블록만. '배포' 날짜는 보도자료 단서(보도 꼬리표·'보도자료' 머리)가 있을 때만 — 안내문의
     '배포 일시' 는 본문이다. 날짜 값은 보도 날짜를 앞세워 한 블록에만 단다."""
     h = page_size(page)[1]
-    top = [b for b in page.blocks if b.merged_into is None and (b.text or "").strip()
-           and local(page, b.bbox)[1] < TOP_RATIO * h]
+    titles = [local(page, b.bbox)[1] for b in page.blocks if b.merged_into is None and b.type == "doc_title"]
+    top = [b for b in page.blocks if b.merged_into is None and (b.text or "").strip()   # 보도 머리 띠 — 문서 제목 위(없으면 위쪽)
+           and (local(page, b.bbox)[3] <= min(titles) + GAP if titles else local(page, b.bbox)[1] < TOP_RATIO * h)]
     labels = [(b, m) for b in top if (m := _PRESS.match(" ".join(b.text.split())))]
     cue = any(m.group("press") for _, m in labels) or any(_PRESS_HEAD.search(b.text) for b in top)
     found: dict[str, tuple[bool, Block, tuple]] = {}    # 블록 id → (보도 날짜가 아님, 블록, 날짜)

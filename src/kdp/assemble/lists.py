@@ -22,6 +22,7 @@ NOTE = "※"                # 주석 기호 — 자리가 일정하지 않아(�
 _START = object()
 _ATTACH = re.compile(r"\s*[\[<〈【(「『]?\s*(?:붙\s*임|첨\s*부|별\s*첨)\s*[\]>〉】)」』]?\s*[:：]?\s*")   # 번호 없는 붙임 꼬리표
 _END = re.compile(r"끝\s*\.\s*$")      # 붙임 목록 끝(공문 '… 1부.  끝.')
+_BARE = re.compile(r"\s*(\d{1,2})\s+\S")   # 마침표를 놓친 번호('3 개인정보 …' — OCR)
 
 
 def _sections(doc: Document):
@@ -117,13 +118,14 @@ def _levels(rows: list[tuple[Block, float, tuple | None]], skip=frozenset()) -> 
     return [(b, offset[g] + sub + 1, "marker" if depth[g] > 1 else "indent") for b, g, sub in found]
 
 
-def _attachments(rows: list[tuple[Block, float, tuple | None]]) -> dict[str, int]:
+def _attachments(rows: list[tuple[Block, float, tuple | None]]) -> dict[str, int | None]:
     """붙임 목록('붙임 1. 계획 1부. 2. …'·'<붙임> 1. …') → {블록 id: 수준}. 섹션 왼쪽 끝의 '꼬리표 + 번호' 줄과, 그 오른쪽(꼬리표
-    폭만큼 들여 쓴) 한 x 에서 다음 번호로 이어지는 같은 체계 항목은 수준 1 — 앞 항목의 하위가 아니다(실측 test2.pdf). 그보다
-    깊은 주·하위 항목은 2 로 두고 건너며, '끝.' 줄 다음이나 다른 블록에서 끝낸다. 꼬리표만 있는 블록은 headings 가 붙임
-    구역을 새로 연다."""
+    폭만큼 들여 쓴) 한 x 에서 다음 번호로 이어지는 같은 체계 항목(마침표를 놓친 '3 …' 도)은 수준 1 — 앞 항목의 하위가 아니다
+    (실측 test2.pdf). 그보다 깊은 줄은 건너며 기호 있는 줄은 들여쓰기 깊이대로 2, 3, …, 기호 없는 줄(주·넘친 줄)은 비운다.
+    '끝.' 줄 다음이나 그 밖의 블록에서 끝낸다. 꼬리표만 있는 블록은 headings 가 붙임 구역을 새로 연다."""
     base = min(x for _, x, _ in rows)
-    out, i = {}, 0
+    out: dict[str, int | None] = {}
+    i = 0
     while i < len(rows):
         b, x, _ = rows[i]
         i += 1
@@ -132,18 +134,29 @@ def _attachments(rows: list[tuple[Block, float, tuple | None]]) -> dict[str, int
         prev = _ordinal(n[1]) if n else ()
         if not prev or x - base > INDENT_TOL:
             continue
-        out[b.id], kind, ex = 1, _kind(n), None
+        out[b.id], kind, ex, deep = 1, _kind(n), None, []
         while i < len(rows) and not _END.search(rows[i - 1][0].text or ""):
             c, cx, cm = rows[i]
+            nxt = prev[:-1] + (prev[-1] + 1,)
             cn = numbering(c.text)
-            if cn and _kind(cn) == kind and _ordinal(cn[1]) == prev[:-1] + (prev[-1] + 1,) and cx > x + INDENT_TOL \
-                    and (ex is None or abs(cx - ex) <= INDENT_TOL):
-                out[c.id], prev, ex = 1, _ordinal(cn[1]), cx if ex is None else ex
-            elif ex is not None and cm and cx > ex + INDENT_TOL:
-                out[c.id] = 2
+            bare = _BARE.match(c.text or "") if kind == "1." and len(prev) == 1 else None
+            if (cn and _kind(cn) == kind and _ordinal(cn[1]) == nxt or bare and int(bare.group(1)) == nxt[0]) \
+                    and cx > x + INDENT_TOL and (ex is None or abs(cx - ex) <= INDENT_TOL):
+                out[c.id], prev, ex = 1, nxt, cx if ex is None else ex
+            elif ex is not None and cx > ex + INDENT_TOL:
+                deep.append((c, cx, cm))                   # 항목 아래 주·하위 항목·넘친 줄
             else:
                 break
             i += 1
+        xs = sorted(cx for _, cx, cm in deep if cm)        # 하위 항목 x 묶음 — 왼쪽부터 2, 3, …
+        spans = []
+        for v in xs:
+            if not spans or v - spans[-1] > INDENT_TOL:
+                spans.append(v)
+            else:
+                spans[-1] = v
+        for c, cx, cm in deep:
+            out[c.id] = 2 + next(k for k, v in enumerate(spans) if cx <= v + INDENT_TOL) if cm else None
     return out
 
 

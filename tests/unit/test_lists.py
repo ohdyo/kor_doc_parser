@@ -222,3 +222,17 @@ def test_attachment_tag_inside_outline_is_not_a_list():
 def test_black_and_white_circled_items_are_one_list():
     doc = _run(_page(1, T("○ 경보 발령 시", 40), I("❶ 군집사례 기준", 83, 70), I("② 매개모기 기준", 83, 90), I("❸ 환자 기준", 83, 110)))
     assert _levels(doc)[1:] == [1, 1, 1]                                      # 한 목록을 다른 원 숫자로 읽어도 형제
+
+
+def test_attachment_run_skips_plain_lines_and_lost_periods():
+    doc = _run(_page(1, T("1. 개요", 30), I("1. 관련: 정보보안 지침", 57, 50),
+                     I("붙임 1. 교육 계획 1부.", 57, 100), I("2. 참가 신청서 1부.", 97, 120),
+                     I("(개인정보 수집·이용 동의서 포함)", 110, 140), I("3 교육 장소 약도 1부.  끝.", 97, 160)))
+    assert _levels(doc)[2:] == [1, 1, None, 1]                                # 기호 없는 깊은 줄은 건너뛰고, 마침표 빠진 번호도 이음
+
+
+def test_attachment_sub_items_keep_depth():
+    doc = _run(_page(1, T("1. 개요", 30), I("1. 관련: 정보보안 지침", 57, 50), I("붙임 1. 교육 계획 1부.", 57, 100),
+                     I("2. 신청 서식 각 1부.", 97, 120), I("가. 참가 신청서", 110, 140), I("1) 개인용", 123, 160),
+                     I("나. 동의서", 110, 180), I("3. 약도 1부.  끝.", 97, 200)))
+    assert _levels(doc)[2:] == [1, 1, 2, 3, 2, 1]

@@ -148,3 +148,22 @@ def test_appendix_tag_leaves_doc_title_captions_and_list_lines():
         doc = classify_blocks(_pages([TAG, (typ, (132, 76, 505, 96), text)]), Classify())
         tag, other = doc.pages[0].blocks
         assert tag.text == "붙임 1" and other.merged_into is None, text
+
+
+def test_appendix_header_with_earlier_title_stays_header():
+    doc = classify_blocks(_pages(
+        [("doc_title", (100, 60, 500, 90), "2026년 정보화 사업 추진계획"), ("text", (60, 120, 520, 200), "1. 추진 배경")],
+        [("header", (66, 30, 458, 44), "붙임 1 2026년 정보화 사업 추진계획"), ("text", (60, 120, 520, 200), "본문 계속")]), Classify())
+    assert (doc.pages[1].blocks[0].type, doc.pages[1].blocks[0].keep) == ("header", False)   # 앞쪽 제목 글과 같으면 되풀이 머리말
+
+
+def test_appendix_tag_leaves_chapter_title():
+    for text in ("Ⅰ. 추진 배경", "제1장 추진 배경"):
+        doc = classify_blocks(_pages([TAG, ("paragraph_title", (132, 76, 505, 96), text)]), Classify())
+        assert doc.pages[0].blocks[0].text == "붙임 1" and doc.pages[0].blocks[1].merged_into is None, text
+
+
+def test_instruction_sentence_with_tag_is_not_root():
+    doc = classify_blocks(_pages([("paragraph_title", (60, 100, 540, 116), "붙임 1 서식에 따라 작성하여 3. 20.(금)까지 제출하여 주시기 바랍니다.")]),
+                          Classify())
+    assert doc.pages[0].blocks[0].type == "text"                                  # 꼬리표와 합친 제목만 문장 꼴 예외
