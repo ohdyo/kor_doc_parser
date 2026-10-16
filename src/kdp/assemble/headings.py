@@ -236,7 +236,8 @@ def _candidates(doc: Document) -> set[str]:
             text = (b.text or "").strip()
             fig = b.type == "figure_title"
             if (b.type not in TITLE_TYPES and not fig) or not text or b.id in caps \
-                    or CONT.fullmatch("".join(text.split())) or (b.type != "doc_title" and sentence_like(text)):
+                    or CONT.fullmatch("".join(text.split())) \
+                    or (b.type != "doc_title" and sentence_like(text) and not _LABEL_TITLE.match(text)):   # '붙임 2 …' 제목은 문장 꼴이어도 뿌리
                 continue
             nxt = next((x for x in live[i + 1:] if not _UNIT_ROW.match(x.text or "")
                         and not CONT.fullmatch("".join((x.text or "").split()))), None)

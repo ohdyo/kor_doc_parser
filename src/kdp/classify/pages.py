@@ -149,7 +149,8 @@ def _cover_score(page: Page, idx: int, n_pages: int, first_blank: bool) -> float
             or any(b.type in ("table", "content") for b in texts)):
         return 0.0
     titles = title_blocks(page)
-    dates = date_blocks(texts)
+    dates = date_blocks(texts) or [b for b in page.blocks if b.merged_into is None and b.type == "doc_meta"
+                                   and (b.meta or {}).get("date")]   # 보도 일시 칸을 메타로 옮겼어도 표지의 날짜다
     rest = [b for b in texts if b not in titles and b not in dates[:1] and not DOC_NO.search((b.text or "").strip())]
     found = [_body_lines(b.text) for b in rest]
     lines, sentence = sum(n for n, _ in found), any(s for _, s in found)
@@ -198,7 +199,8 @@ def _divider_score(page: Page) -> float:
     """간지 — 짧은 '붙임 n·별첨·부록·제n장' 제목 하나(+ 짧은 부제)와 여백. 붙임 목록·'끝.'·문장, 제목 뒤의 항목·'※' 주·
     '이름: 값' 줄이 있으면 내용이 든 쪽이다(기획서 5.1 — 간지는 '붙임 n·제n장' 만 있는 쪽)."""
     blocks = _content(page)
-    if not blocks or len(blocks) > 2 or any(b.type not in TEXT_LABELS or b.error for b in blocks):
+    n = len(blocks) + sum(any(p.get("rule") == "appendix_title" for p in b.provenance or []) for b in blocks)   # 꼬리표와 합친 제목은 두 블록
+    if not blocks or n > 2 or any(b.type not in TEXT_LABELS or b.error for b in blocks):
         return 0.0
     text = "\n".join(b.text or "" for b in blocks).strip()
     m = _DIVIDER.match(text)

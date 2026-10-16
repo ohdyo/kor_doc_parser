@@ -403,3 +403,26 @@ def test_press_release_date_prefers_release_over_distribution():
 def test_press_words_in_body_are_not_dates():
     doc = _run(_doc(_page(1, ("text", (70, 110, 520, 124), "보도 자료에 따르면 2026. 3. 1. 시행"), BODY)))
     assert doc.pages[0].blocks[0].keep and "date" not in doc.meta
+
+
+def test_press_label_takes_only_next_cell():
+    doc = _run(_doc(_page(1, ("header", (60, 112, 110, 126), "보도시점"),
+                          ("text", (115, 112, 330, 126), "(온라인) 2026. 6. 22.(월) 12:00 (지면) 6. 23.(화) 조간"),
+                          ("header", (340, 112, 370, 126), "배포"), ("text", (380, 112, 540, 126), "2026. 6. 22.(월) 10:00"), BODY)))
+    b = doc.pages[0].blocks
+    assert (b[1].type, b[3].type, b[3].meta) == ("text", "doc_meta", {"date": "2026-06-22"})   # 다른 꼬리표의 날짜를 건너 잡지 않는다
+    assert doc.meta["date"] == "2026-06-22"
+
+
+def test_distribution_line_without_press_cue_is_body():
+    doc = _run(_doc(_page(1, ("doc_title", (100, 60, 500, 80), "2026년 하반기 방역물품 배포 안내"),
+                          ("text", (70, 110, 520, 124), "배포 일시: 2026. 7. 1.(수) 10:00 ~ 12:00"), BODY)))
+    assert doc.pages[0].blocks[1].keep and "date" not in doc.meta
+
+
+def test_press_cover_is_still_cover():
+    doc = _run(_doc(_page(1, ("text", (60, 100, 140, 114), "보도일시"), ("text", (150, 100, 300, 114), "2026. 6. 22.(월)"),
+                          ("doc_title", (100, 300, 500, 330), "2026년 상반기 경제전망"), ("text", (200, 700, 400, 720), "한국개발연구원")),
+                    _page(2, BODY)))
+    assert not doc.pages[0].keep and doc.pages[0].page_class == "cover"        # 메타로 옮긴 날짜 칸도 표지의 날짜
+    assert doc.meta["date"] == "2026-06-22"
