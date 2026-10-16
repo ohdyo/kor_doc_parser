@@ -9,18 +9,30 @@ NOT_SAMPLE = {"header", "footer", "number"}
 SAMPLES = 3                   # 검증 표본 수 — 글자가 가장 많은 본문, 글자 크기가 다른 블록, 그다음 많은 본문
 LINE_GAP = 2.6                # 줄 사이가 글자 높이의 이 배수보다 벌면 레이어에 없는 줄이 낀 것(채운 입력란·윤곽선 글자 등)
 WORD_GAP = 3.0                # 한 줄 안 빈틈이 이 배수보다 넓으면 레이어에 없는 글자가 낀 것
+FILLERS = set("._·‗‥…⋯─━・＿")   # 빈칸 채움 문자 — 서식 빈칸('신청 인원: ……… 명')을 메우므로 줄 안 빈틈을 잴 때 뺀다
 
 
 def _median(xs: list[float]) -> float:
     return sorted(xs)[len(xs) // 2]
 
 
-def _lines(inside):
-    rows, cur = [], []
+def _lines(inside, h):
+    """세로로 겹치는 글자를 한 줄로 — 줄 높이는 보통 글자(한글·숫자·영문)로 잡는다. 글자 상자는 글자 모양대로라 마침표·쉼표는
+    아래, 따옴표는 위에 붙고 높이도 다르다(실측 test2.pdf: 한글 26px·숫자 18px·마침표 3px) — 가운데로 묶으면 마침표만 따로 한
+    줄이 되고 그 사이가 빈틈으로 보였다. 두 줄에 걸친 큰 글자('A'·①)와 두 줄 사이 가운데에 놓인 글자(이름 칸)는 줄 높이를
+    넓히지 않는다 — 넓히면 다음 줄까지 한 줄로 묶여 그 줄의 빈틈을 못 본다."""
+    rows, cur, top, bot, core = [], [], 0.0, 0.0, False
     for item in sorted(inside, key=lambda c: (c[0][1] + c[0][3]) / 2):
-        if cur and abs((item[0][1] + item[0][3]) / 2 - (cur[-1][0][1] + cur[-1][0][3]) / 2) > 0.5 * item[2]:
+        b = item[0]
+        if cur and min(bot, b[3]) - max(top, b[1]) < 0.5 * min(b[3] - b[1], bot - top):
             rows.append(cur)
             cur = []
+        normal = item[1].isalnum() and b[3] - b[1] <= 1.5 * h
+        if not cur:
+            top, bot, core = b[1], b[3], normal
+        elif normal and (not core or top <= (b[1] + b[3]) / 2 <= bot or bot - top < 0.75 * (b[3] - b[1])):
+            top, bot = (min(top, b[1]), max(bot, b[3])) if core else (b[1], b[3])
+            core = True
         cur.append(item)
     return rows + [cur] if cur else rows
 
@@ -35,12 +47,12 @@ def _covered(box, inside) -> bool:
         return False
     if (y1 - y0) - (max(c[0][3] for c in inside) - min(c[0][1] for c in inside)) > max(0.2 * (y1 - y0), 1.5 * h):
         return False
-    rows = _lines(inside)
+    rows = _lines(inside, h)
     centers = [sum((c[0][1] + c[0][3]) / 2 for c in r) / len(r) for r in rows]
     if any(b - a > LINE_GAP * h for a, b in zip(centers, centers[1:])):
         return False
     for r in rows:
-        xs = sorted(r, key=lambda c: c[0][0])
+        xs = sorted((c for c in r if c[1] not in FILLERS), key=lambda c: c[0][0])
         if any(b[0][0] - a[0][2] > WORD_GAP * h for a, b in zip(xs, xs[1:])):
             return False
     return True
