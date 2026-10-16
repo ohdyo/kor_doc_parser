@@ -8,6 +8,7 @@ VLM 이 읽은 글머리 기호는 믿을 수 없다(○ 가 ☐ 로, PPT 기호
 """
 from __future__ import annotations
 
+import re
 from itertools import groupby
 
 from ..geometry import local, page_size
@@ -19,6 +20,7 @@ MAX_INDENT = 0.3          # 섹션 왼쪽 끝에서 이보다 오른쪽(가운�
 MAX_SHIFT = 0.06          # 쪽 사이 가로 밀림으로 보는 최대 x 차이(논리 쪽 너비 대비, A4 약 36pt) — 스캔 밀림·맞쪽(제본) 여백
 NOTE = "※"                # 주석 기호 — 자리가 일정하지 않아(□ 자리·○ 자리) 쪽 밀림 근거로 쓰지 않는다
 _START = object()
+_ATTACH = re.compile(r"\s*[\[<〈【(「『]?\s*(?:붙\s*임|첨\s*부|별\s*첨)\s*[\]>〉】)」』]?\s*[:：]?\s*")   # 번호 없는 붙임 꼬리표
 
 
 def _sections(doc: Document):
@@ -102,11 +104,35 @@ def _levels(items: list[tuple[Page, Block]]) -> list[tuple[Block, int, str]]:
     return [(b, offset[g] + sub + 1, "marker" if depth[g] > 1 else "indent") for b, g, sub in found]
 
 
+def _attachments(items: list[tuple[Page, Block]]) -> list[Block]:
+    """붙임 목록('붙임 1. 계획 1부. 2. …'·'<붙임> 1. …') — 꼬리표 뒤 번호 항목과 이어진 같은 체계의 번호 항목들. 들여쓰기는
+    꼬리표 폭 때문이라 앞 항목의 하위가 아니다(실측 test2.pdf — 앞쪽 항목보다 오른쪽이라 수준 2 가 됐다). 꼬리표만 있는
+    블록은 headings 가 붙임 구역을 새로 열어 그 아래 항목이 구역 안에서 1 이 된다."""
+    out, kind = [], None
+    for _, b in items:
+        text = b.text or ""
+        n = numbering(text)
+        if kind is not None and n and n[0] == kind:
+            out.append(b)
+            continue
+        kind = None
+        if (m := _ATTACH.match(text)) and (n := numbering(text[m.end():])):
+            out.append(b)
+            kind = n[0]
+    return out
+
+
 def lists(doc: Document) -> Document:
-    """항목 블록에 list_level — 섹션 안에서 1 부터."""
+    """항목 블록에 list_level — 섹션 안에서 1 부터. 붙임 목록은 따로 수준 1."""
     doc = doc.model_copy(deep=True)
     for items in _sections(doc):
-        for b, level, by in _levels(items):
+        attach = _attachments(items)
+        for b in attach:
+            b.list_level = 1
+            b.provenance = (b.provenance or []) + [{"rule": "list_level", "by": "attachment"}]
+        skip = {b.id for b in attach}
+        rest = [(p, b) for p, b in items if b.id not in skip]
+        for b, level, by in (_levels(rest) if rest else []):
             b.list_level = level
             b.provenance = (b.provenance or []) + [{"rule": "list_level", "by": by}]
     return doc

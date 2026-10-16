@@ -622,3 +622,8 @@ def test_sentence_like_doc_title_is_level_zero():
     b = _by_text(doc)
     assert b["정부, 공공데이터 3만 개 추가 개방한다"].heading_level == 0
     assert b["하반기 산출물 보완 현황은 아래와 같음"].heading_level is None and b["본문 둘"].section_path == []
+
+
+def test_other_circled_numbers():
+    assert numbering("➀ 군집사례 기준") == ("①", "➀") and numbering("➁ 매개모기 기준") == ("①", "➁")   # 글자층의 다른 원 숫자
+    assert numbering("❶ 개요") == ("❶", "❶") and numbering("➋ 현황") == ("❶", "➋")                 # 검은 원 숫자는 다른 단계
