@@ -61,6 +61,7 @@ END = re.compile(r"(?:^|\s)끝\s*\.\s*$", re.M)                  # 공문 본문
 _PRESS = re.compile(r"\s*(?:(?P<press>보\s*도(?:\s*(?:시\s*점|일\s*시|일\s*자|일))?|엠\s*바\s*고)"
                     r"|배\s*포(?:\s*(?:일\s*시|일\s*자|일))?)(?![가-힣])\s*[:：]?\s*")
 _DATED = re.compile(r"\s*[(\[]?\s*(?:19|20)\d{2}\s*[.년/\-]")      # 날짜로 시작하는 글 — 꼬리표 바로 뒤·옆 칸
+_PRESS_HEAD = re.compile(r"(?:보\s*도\s*(?:참\s*고\s*|설\s*명\s*|해\s*명\s*)?|설\s*명\s*|해\s*명\s*)자\s*료")   # 보도자료 머리 — '배포' 날짜를 받는 단서
 # 문장 줄 — 항목 이름이 있어도 메타 줄이 아니다. '개요·필요' 로 끝나는 제목은 문장이 아니다
 _SENT = re.compile(r"(?:다|[어아여해워와봐줘져세네게데래대나까에]요)\s*[.。!?]?\s*$")
 _TERSE = re.compile(r"[함음임됨]\s*\.?\s*$")                    # 개조식 끝맺음('… 예정임.')
@@ -326,30 +327,35 @@ def _issuer_line(page: Page, heads: list[Block]) -> None:
 
 def _press_dates(page: Page) -> None:
     """보도자료 머리의 보도·배포 일시 → doc_meta(date)(실측 test2.pdf — '보도시점' 꼬리표는 머리말로 버려지고 옆 날짜 칸만
-    글로 남았다). 첫 논리 페이지 위쪽에서 꼬리표 블록(버린 것도) 오른쪽 같은 줄의 날짜 글 블록, 또는 꼬리표 뒤에 날짜가 든 글
-    블록만. 날짜 값은 보도 날짜를 앞세워 한 블록에만 단다."""
+    글로 남았다). 첫 논리 페이지 위쪽에서 꼬리표 블록(버린 것도) 같은 줄 바로 오른쪽 칸이 날짜로 시작하는 짧은 글 블록이거나,
+    꼬리표 뒤에 날짜가 바로 오는 글 블록만. '배포' 날짜는 보도자료 단서(보도 꼬리표·'보도자료' 머리)가 있을 때만 — 안내문의
+    '배포 일시' 는 본문이다. 날짜 값은 보도 날짜를 앞세워 한 블록에만 단다."""
     h = page_size(page)[1]
     top = [b for b in page.blocks if b.merged_into is None and (b.text or "").strip()
            and local(page, b.bbox)[1] < TOP_RATIO * h]
-    found = []                                          # (보도 날짜가 아님, 블록, 날짜)
-    for lab in top:
-        s = " ".join(lab.text.split())
-        if not (m := _PRESS.match(s)):
-            continue
+    labels = [(b, m) for b in top if (m := _PRESS.match(" ".join(b.text.split())))]
+    cue = any(m.group("press") for _, m in labels) or any(_PRESS_HEAD.search(b.text) for b in top)
+    found: dict[str, tuple[bool, Block, tuple]] = {}    # 블록 id → (보도 날짜가 아님, 블록, 날짜)
+    for lab, m in labels:
         rank = m.group("press") is None
-        if rest := s[m.end():]:                         # 꼬리표와 날짜가 한 블록
-            if lab.keep and lab.type == "text" and _DATED.match(rest) and (d := find_date(rest)) and len(rest) <= 30:
-                found.append((rank, lab, d))
+        if rank and not cue:
             continue
-        x0, y0, x1, y1 = local(page, lab.bbox)
-        for b in top:
-            bx0, by0, _, by1 = local(page, b.bbox)
-            if b is not lab and b.keep and b.type == "text" and bx0 >= x1 - GAP \
-                    and min(y1, by1) - max(y0, by0) >= 0.5 * min(y1 - y0, by1 - by0) \
-                    and len(" ".join(b.text.split())) <= 30 and _DATED.match(b.text) and (d := find_date(b.text)):
-                found.append((rank, b, d))
-                break
-    for i, (_, b, d) in enumerate(sorted(found, key=lambda f: f[0])):
+        b, text = lab, " ".join(lab.text.split())[m.end():]   # 꼬리표와 날짜가 한 블록
+        if not text:
+            x0, y0, x1, y1 = local(page, lab.bbox)
+            right = []
+            for o in top:
+                ox0, oy0, _, oy1 = local(page, o.bbox)
+                if o is not lab and ox0 >= x1 - GAP and min(y1, oy1) - max(y0, oy0) >= 0.5 * min(y1 - y0, oy1 - oy0):
+                    right.append((ox0, o))
+            if not right:
+                continue
+            b = min(right, key=lambda r: r[0])[1]           # 같은 줄 바로 오른쪽 칸만 — 다른 꼬리표의 날짜를 건너 잡지 않는다
+            text = " ".join(b.text.split())
+        if b.keep and b.type == "text" and len(text) <= 30 and _DATED.match(text) and (d := find_date(text)) \
+                and (b.id not in found or rank < found[b.id][0]):
+            found[b.id] = (rank, b, d)
+    for i, (_, b, d) in enumerate(sorted(found.values(), key=lambda f: f[0])):
         _retype(b, "doc_meta", "meta")
         b.meta = {"date": _iso(d)} if i == 0 else None
 

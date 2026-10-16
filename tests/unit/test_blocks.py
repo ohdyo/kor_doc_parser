@@ -110,3 +110,41 @@ def test_appendix_tag_leaves_running_header_and_list_lines():
     assert (p1.blocks[0].keep, p1.blocks[0].drop_reason) == (False, "header")
     assert p1.blocks[1].text == "붙임 1" and p1.blocks[2].keep and p1.blocks[2].merged_into is None   # 번호 항목은 잇지 않는다
     assert (p2.blocks[1].type, p2.blocks[1].keep) == ("header", False)       # 붙임 목록 줄은 제목이 아니다
+
+
+def test_appendix_title_sentence_stays_root():
+    from kdp.assemble.headings import headings
+    doc = headings(classify_blocks(_pages(
+        [("doc_title", (150, 40, 450, 60), "보도 제목"), ("text", (60, 100, 520, 200), "본문")],
+        [("paragraph_title", (64, 76, 111, 97), "붙임 2"), ("paragraph_title", (132, 76, 505, 96), "청년 월세 지원, 이렇게 신청하세요"),
+         ("text", (60, 120, 520, 140), "○ 월세 지원 대상을 확대함")]), Classify()))
+    tag, _, item = doc.pages[1].blocks
+    assert (tag.type, tag.heading_level) == ("paragraph_title", 1)              # 문장 꼴 제목이어도 붙임 뿌리
+    assert item.section_path == ["붙임 2 청년 월세 지원, 이렇게 신청하세요"]
+
+
+def test_appendix_header_seen_before_stays_header():
+    doc = classify_blocks(_pages(
+        [("paragraph_title", (64, 76, 450, 97), "붙임 1 사업 추진계획"), ("text", (60, 120, 520, 200), "1. 추진 배경")],
+        [("header", (66, 30, 458, 44), "붙임 1 사업 추진계획"), ("text", (60, 120, 520, 200), "본문 계속")],
+        [("header", (66, 30, 458, 44), "붙임 2 세부 일정 (1/3)"), ("text", (60, 120, 520, 200), "일정")],
+        [("header", (66, 30, 458, 44), "붙임 2 세부 일정 (2/3)"), ("text", (60, 120, 520, 200), "일정")]), Classify())
+    assert (doc.pages[1].blocks[0].type, doc.pages[1].blocks[0].keep) == ("header", False)   # 앞쪽 제목과 같은 붙임 번호
+    assert all(p.blocks[0].type == "header" for p in doc.pages[2:])                          # 숫자만 다른 되풀이 머리말
+
+
+def test_short_appendix_page_is_not_divider():
+    from kdp.classify.pages import classify_pages
+    doc = classify_pages(classify_blocks(_pages(
+        [("doc_title", (150, 40, 450, 60), "보도 제목"), ("text", (60, 100, 520, 300), "본문 " * 40)],
+        [("paragraph_title", (64, 76, 111, 97), "붙임 4"), ("paragraph_title", (132, 76, 505, 96), "관련 누리집 안내"),
+         ("text", (60, 120, 520, 140), "질병관리청 누리집 www.kdca.go.kr")]), Classify()), Classify())
+    assert doc.pages[1].keep and doc.pages[1].page_class != "divider"            # 합친 꼬리표 제목은 간지 판정에서 두 블록
+
+
+def test_appendix_tag_leaves_doc_title_captions_and_list_lines():
+    for typ, text in [("doc_title", "2026년 감시 결과"), ("text", "<표 1> 시·도별 현황"), ("text", "[ 시·도별 현황 ]"),
+                      ("text", "<그림 1> 감시 지점"), ("text", "계획서 1부.  끝.")]:
+        doc = classify_blocks(_pages([TAG, (typ, (132, 76, 505, 96), text)]), Classify())
+        tag, other = doc.pages[0].blocks
+        assert tag.text == "붙임 1" and other.merged_into is None, text

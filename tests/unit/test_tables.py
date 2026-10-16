@@ -458,3 +458,25 @@ def test_figure_caption_prefers_bracket_title_above():
     assert b["p1.b02"].caption_id == "p1.b01" and b["p1.b05"].caption_id == "p1.b04"
     assert b["p1.b07"].caption_id == b["p1.b08"].caption_id == "p1.b06"             # 나란한 두 그림이 한 제목을 함께
     assert b["p1.b09"].caption_id is None
+
+
+def test_bracket_tags_and_heading_labels_are_not_captions():
+    for typ, text in [("text", "[별지 제1호서식]"), ("text", "[붙임 1-1]"), ("text", "<별첨 2-1>"), ("text", "[참고자료]"),
+                      ("paragraph_title", "【 추진 실적 】")]:
+        doc = tables(_doc((typ, (60, 100, 300, 114), text), ("table", (60, 120, 540, 200), T)))
+        assert doc.pages[0].blocks[1].caption_id is None, text
+    doc = tables(_doc(("doc_title", (150, 100, 450, 114), "「 2026년 정보보안 기본계획 」"), ("image", (100, 120, 500, 300), None)))
+    assert doc.pages[0].blocks[1].caption_id is None                          # 문서 제목은 그림 제목이 아니다
+
+
+def test_figure_caption_order():
+    doc = tables(_doc(("text", (180, 100, 420, 114), "【 추진 체계 】"), ("image", (100, 120, 500, 300), None),
+                      ("figure_title", (180, 304, 420, 316), "<그림 1> 추진 체계도")))
+    assert doc.pages[0].blocks[1].caption_id == "p1.b03"                     # 아래 '<그림 n>' 이 위 괄호 줄보다 먼저
+    doc = tables(_doc(("image", (100, 100, 500, 200), None), ("figure_title", (180, 204, 420, 216), "<그림 1> 시스템 구성도"),
+                      ("image", (100, 220, 500, 320), None), ("figure_title", (180, 324, 420, 336), "<그림 2> 데이터 흐름도")))
+    b = doc.pages[0].blocks
+    assert (b[0].caption_id, b[2].caption_id) == ("p1.b02", "p1.b04")          # 쌓인 그림은 제 아래 제목
+    doc = tables(_doc(("text", (100, 100, 500, 114), "<그림 2>는 최근 5년간 환자 수를 나타낸 것이다."),
+                      ("chart", (100, 120, 500, 300), None), ("figure_title", (180, 304, 420, 316), "<그림 2> 연도별 환자 수")))
+    assert doc.pages[0].blocks[1].caption_id == "p1.b03"                     # 그림을 가리키는 본문 문장은 제목이 아니다

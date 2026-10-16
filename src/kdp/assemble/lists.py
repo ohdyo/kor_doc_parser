@@ -13,7 +13,7 @@ from itertools import groupby
 
 from ..geometry import local, page_size
 from ..schema import Block, Document, Page
-from .headings import TITLE_TYPES, doc_title_key, marker, numbering, place
+from .headings import TITLE_TYPES, _ordinal, doc_title_key, marker, numbering, place
 
 INDENT_TOL = 0.008        # 같은 수준으로 보는 x 차이(논리 쪽 너비 대비, A4 에서 약 5pt) — 블록 상자 흔들림
 MAX_INDENT = 0.3          # 섹션 왼쪽 끝에서 이보다 오른쪽(가운데 맞춤 글·오른쪽 날짜·다른 단)은 항목으로 보지 않는다
@@ -21,6 +21,7 @@ MAX_SHIFT = 0.06          # 쪽 사이 가로 밀림으로 보는 최대 x 차�
 NOTE = "※"                # 주석 기호 — 자리가 일정하지 않아(□ 자리·○ 자리) 쪽 밀림 근거로 쓰지 않는다
 _START = object()
 _ATTACH = re.compile(r"\s*[\[<〈【(「『]?\s*(?:붙\s*임|첨\s*부|별\s*첨)\s*[\]>〉】)」』]?\s*[:：]?\s*")   # 번호 없는 붙임 꼬리표
+_END = re.compile(r"끝\s*\.\s*$")      # 붙임 목록 끝(공문 '… 1부.  끝.')
 
 
 def _sections(doc: Document):
@@ -74,12 +75,22 @@ def _shifts(rows: list[tuple[int, Block, float, tuple | None]]) -> dict[int, flo
     return out
 
 
-def _levels(items: list[tuple[Page, Block]]) -> list[tuple[Block, int, str]]:
+def _kind(n: tuple[str, str] | None) -> str | None:
+    """항목 수준에서는 ❶ 과 ① 을 한 체계로 — 한 목록을 VLM·글자층이 다른 원 숫자로 읽기도 한다(제목 스택에서는 따로)."""
+    return None if n is None else "①" if n[0] == "❶" else n[0]
+
+
+def _rows(items: list[tuple[Page, Block]]) -> list[tuple[Block, float, tuple | None]]:
+    """(블록, 쪽 가로 밀림을 뺀 x, 줄 머리 번호·기호)."""
     rows = [(page.page_no, b, local(page, b.bbox)[0] / page_size(page)[0], marker(b.text)) for page, b in items]
     shift = _shifts(rows)
-    rows = [(b, x - shift[no], m) for no, b, x, m in rows]
+    return [(b, x - shift[no], m) for no, b, x, m in rows]
+
+
+def _levels(rows: list[tuple[Block, float, tuple | None]], skip=frozenset()) -> list[tuple[Block, int, str]]:
+    """skip(붙임 목록) 블록은 수준을 매기지 않지만 섹션 왼쪽 끝은 그것까지 넣어 잰다."""
     base = min(x for _, x, _ in rows)                       # 섹션 왼쪽 끝
-    xs = sorted(x for _, x, m in rows if m and x - base <= MAX_INDENT)
+    xs = sorted(x for b, x, m in rows if m and b.id not in skip and x - base <= MAX_INDENT)
     if not xs:
         return []                                         # 항목이 없는 섹션 — 들여쓴 글은 첫 줄 들여쓰기 문단일 수 있다
     spans = [[xs[0], xs[0]]]                              # 번호·기호 있는 항목의 x 묶음
@@ -91,48 +102,59 @@ def _levels(items: list[tuple[Page, Block]]) -> list[tuple[Block, int, str]]:
     kinds = [[] for _ in spans]                           # 묶음마다 번호 체계 스택(한 x 에 번호 체계가 섞인 문서)
     cur, depth, found = [0] * len(spans), [1] * len(spans), []
     for b, x, m in rows:
+        if b.id in skip:
+            continue
         g = next((i for i, (lo, hi) in enumerate(spans) if lo - INDENT_TOL <= x <= hi + INDENT_TOL), None)
         if g is None or x - base > MAX_INDENT or (not m and x - base <= INDENT_TOL):
             continue                                      # 묶음 밖 글, 기호 없이 왼쪽 끝인 문단
-        if m and (n := numbering(b.text)):
-            t = place(kinds[g], n[0])
+        if m and (k := _kind(numbering(b.text))):
+            t = place(kinds[g], k)
             del kinds[g][t:]
-            kinds[g].append(n[0])
+            kinds[g].append(k)
             cur[g], depth[g] = t, max(depth[g], t + 1)
         found.append((b, g, cur[g]))                       # 기호·기호 없는 항목은 앞 번호 항목의 하위 수준을 받는다
     offset = [sum(depth[:i]) for i in range(len(spans))]
     return [(b, offset[g] + sub + 1, "marker" if depth[g] > 1 else "indent") for b, g, sub in found]
 
 
-def _attachments(items: list[tuple[Page, Block]]) -> list[Block]:
-    """붙임 목록('붙임 1. 계획 1부. 2. …'·'<붙임> 1. …') — 꼬리표 뒤 번호 항목과 이어진 같은 체계의 번호 항목들. 들여쓰기는
-    꼬리표 폭 때문이라 앞 항목의 하위가 아니다(실측 test2.pdf — 앞쪽 항목보다 오른쪽이라 수준 2 가 됐다). 꼬리표만 있는
-    블록은 headings 가 붙임 구역을 새로 열어 그 아래 항목이 구역 안에서 1 이 된다."""
-    out, kind = [], None
-    for _, b in items:
-        text = b.text or ""
-        n = numbering(text)
-        if kind is not None and n and n[0] == kind:
-            out.append(b)
+def _attachments(rows: list[tuple[Block, float, tuple | None]]) -> dict[str, int]:
+    """붙임 목록('붙임 1. 계획 1부. 2. …'·'<붙임> 1. …') → {블록 id: 수준}. 섹션 왼쪽 끝의 '꼬리표 + 번호' 줄과, 그 오른쪽(꼬리표
+    폭만큼 들여 쓴) 한 x 에서 다음 번호로 이어지는 같은 체계 항목은 수준 1 — 앞 항목의 하위가 아니다(실측 test2.pdf). 그보다
+    깊은 주·하위 항목은 2 로 두고 건너며, '끝.' 줄 다음이나 다른 블록에서 끝낸다. 꼬리표만 있는 블록은 headings 가 붙임
+    구역을 새로 연다."""
+    base = min(x for _, x, _ in rows)
+    out, i = {}, 0
+    while i < len(rows):
+        b, x, _ = rows[i]
+        i += 1
+        m = _ATTACH.match(b.text or "")
+        n = numbering((b.text or "")[m.end():]) if m else None
+        prev = _ordinal(n[1]) if n else ()
+        if not prev or x - base > INDENT_TOL:
             continue
-        kind = None
-        if (m := _ATTACH.match(text)) and (n := numbering(text[m.end():])):
-            out.append(b)
-            kind = n[0]
+        out[b.id], kind, ex = 1, _kind(n), None
+        while i < len(rows) and not _END.search(rows[i - 1][0].text or ""):
+            c, cx, cm = rows[i]
+            cn = numbering(c.text)
+            if cn and _kind(cn) == kind and _ordinal(cn[1]) == prev[:-1] + (prev[-1] + 1,) and cx > x + INDENT_TOL \
+                    and (ex is None or abs(cx - ex) <= INDENT_TOL):
+                out[c.id], prev, ex = 1, _ordinal(cn[1]), cx if ex is None else ex
+            elif ex is not None and cm and cx > ex + INDENT_TOL:
+                out[c.id] = 2
+            else:
+                break
+            i += 1
     return out
 
 
 def lists(doc: Document) -> Document:
-    """항목 블록에 list_level — 섹션 안에서 1 부터. 붙임 목록은 따로 수준 1."""
+    """항목 블록에 list_level — 섹션 안에서 1 부터. 붙임 목록은 따로(_attachments)."""
     doc = doc.model_copy(deep=True)
     for items in _sections(doc):
-        attach = _attachments(items)
-        for b in attach:
-            b.list_level = 1
-            b.provenance = (b.provenance or []) + [{"rule": "list_level", "by": "attachment"}]
-        skip = {b.id for b in attach}
-        rest = [(p, b) for p, b in items if b.id not in skip]
-        for b, level, by in (_levels(rest) if rest else []):
+        rows = _rows(items)
+        attach = _attachments(rows)
+        found = [(b, lv, "attachment") for b, _, _ in rows if (lv := attach.get(b.id))] + _levels(rows, set(attach))
+        for b, level, by in found:
             b.list_level = level
             b.provenance = (b.provenance or []) + [{"rule": "list_level", "by": by}]
     return doc

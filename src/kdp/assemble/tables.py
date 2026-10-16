@@ -21,6 +21,8 @@ SOURCE = re.compile(r"^\s*(?:※\s*)?(?:자료|출처)\s*[:：]")
 FIG_CAPTION = re.compile(r"^\s*[\[<〈【(]?\s*(?:그림|사진|figure|fig\.?)\s*\d", re.I)   # 그림 제목의 단위는 표에 붙이지 않는다
 _BRACKET = re.compile(r"\s*(?:\[[^\[\]\n]+\]|<[^<>\n]+>|〈[^〈〉\n]+〉|【[^【】\n]+】|「[^「」\n]+」)\s*")   # 괄호로 감싼 한 줄
 BRACKET_MIN, BRACKET_MAX = 4, 60   # 괄호 안 글자 수(띄어쓰기 뺀) — '[참고]'·'<붙임>' 꼬리표는 제목이 아니다
+_TAG_ONLY = re.compile(r"(?:붙\s*임|별\s*첨|첨\s*부|부\s*록|별\s*지|별\s*표|참\s*고)(?:\s*자\s*료)?\s*(?:제\s*)?"
+                       r"(?:[\dⅠ-Ⅻ]+(?:\s*[-–]\s*\d+)*)?\s*(?:호)?\s*(?:서\s*식)?")   # 괄호 안이 꼬리표뿐('[별지 제1호서식]'·'[붙임 1-1]')
 _ROW = re.compile(r"<tr[^>]*>.*?(?=<tr[\s>]|</table>|$)", re.S | re.I)
 _CELL = re.compile(r"<t([dh])([^>]*)>(.*?)</t[dh]>", re.S | re.I)
 MAX_GAP = 15.0                # 표와 제목·단위·출처 블록 사이 세로 틈(pt)
@@ -151,7 +153,7 @@ def _link(page: Page, t: Block) -> None:
             near.append((mine, side, b))
     near.sort(key=lambda x: (x[1] != "up", x[0]))                  # 위쪽 먼저, 가까운 것 먼저
     cap = next((b for _, _, b in near if CAPTION.match(b.text)), None) \
-        or next((b for _, side, b in near if side == "up" and bracket_title(b.text)), None)
+        or next((b for _, side, b in near if side == "up" and b.type in ("text", "figure_title") and bracket_title(b.text)), None)
     if cap:
         t.caption_id = cap.id
     for _, side, b in near:
@@ -161,17 +163,19 @@ def _link(page: Page, t: Block) -> None:
 
 def bracket_title(text: str | None) -> bool:
     """괄호로 감싼 한 줄 제목('[ 국내 환자 발생 추이 ]'·'<발령 기준>') — 번호 없는 표·그림 제목(실측 test2.pdf). '(단위: …)'·
-    '(계속)' 줄과 짧은 꼬리표는 아니다."""
+    '(계속)' 줄과 꼬리표('[참고]'·'[별지 제1호서식]'·'[붙임 1-1]' — 붙임 구역 뿌리다)는 아니다."""
     s = (text or "").strip()
-    if not _BRACKET.fullmatch(s) or _UNIT_LINE.fullmatch(s) or CONT.fullmatch("".join(s.split())):
+    if not _BRACKET.fullmatch(s) or _UNIT_LINE.fullmatch(s) or CONT.fullmatch("".join(s.split())) \
+            or _TAG_ONLY.fullmatch(s[1:-1].strip()):
         return False
     return BRACKET_MIN <= len("".join(s.split())) - 2 <= BRACKET_MAX
 
 
 def _link_figure(page: Page, f: Block) -> None:
-    """그림·차트 바로 위·아래(MAX_GAP 안)의 제목 — '<그림 n>'·괄호 제목을 검출기 그림 제목(figure_title) 줄보다, 위쪽을
-    아래쪽보다, 가까운 것을 먼저(그래프 바로 아래 축 이름도 figure_title 로 잡힌다 — 실측). 다른 표·그림에 더 가까운 블록은
-    그쪽 것이고, 나란한 그림 위의 한 제목은 함께 받는다."""
+    """그림·차트 바로 위·아래(MAX_GAP 안)의 제목 — '<그림 n>'(아래 먼저 — 관례) → 괄호 제목(위 먼저) → 검출기 그림 제목
+    (figure_title, 위 먼저 — 그래프 바로 아래 축 이름도 figure_title 로 잡힌다, 실측) 차례로, 같으면 가까운 것. '<그림 2>는 …'
+    같은 본문 참조와 괄호로 감싼 구역·문서 제목 라벨(paragraph_title·doc_title)은 받지 않는다. 다른 표·그림에 더 가까운
+    블록은 그쪽 것이고, 나란한 그림 위의 한 제목은 함께 받는다."""
     others = [o for o in page.blocks if o is not f and o.merged_into is None and o.type in ("table", "image", "chart")]
     near = []
     for b in page.blocks:
@@ -182,9 +186,10 @@ def _link_figure(page: Page, f: Block) -> None:
         if side is None:
             continue
         mine = up if side == "up" else down
-        strong = bool(FIG_CAPTION.match(b.text) or bracket_title(b.text))
-        if (strong or b.type == "figure_title") and not any(_dist(page, b, o) < mine for o in others):
-            near.append((not strong, side != "up", mine, b))
+        fig = bool(FIG_CAPTION.match(b.text) and appendage(b.text))
+        bracket = b.type in ("text", "figure_title") and bracket_title(b.text)
+        if (fig or bracket or b.type == "figure_title") and not any(_dist(page, b, o) < mine for o in others):
+            near.append((0 if fig else 1 if bracket else 2, side != ("down" if fig else "up"), mine, b))
     if near:
         f.caption_id = min(near, key=lambda x: x[:3])[3].id
 
