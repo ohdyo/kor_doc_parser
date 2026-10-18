@@ -565,6 +565,21 @@ def test_invented_figure_text_dropped():
     assert (a.truncated, a.provenance) == (None, [{"rule": "figure_text_noise", "before": "ふ～～～", "truncated": "length"}])
 
 
+def test_truncated_chart_text_dropped():
+    # 그래프 속 글자 읽기가 한도까지 지어낸 되풀이(실측 test3.pdf 5·12쪽)는 앞줄까지 버린다 — 잘리지 않은 그래프 글과 잘린 그림
+    # (image) 글은 그대로 둔다(그림 글은 QC 가 잘림으로 센다)
+    doc = _doc(("chart", (60, 60, 300, 200), None), ("chart", (60, 220, 300, 360), None), ("image", (60, 380, 300, 520), None))
+    a, b, c = doc.pages[0].blocks
+    loop = "2026년 9월 충북 평균기온\nLON 125.4\n203.0\n203.1\n203.2"
+    a.figure_text, a.truncated = loop, "length"
+    b.figure_text = "20주\n21주\n양구군"
+    c.figure_text, c.truncated = "2026 국민 안전 수칙", "repetition"
+    a, b, c = tables(doc).pages[0].blocks
+    assert (a.figure_text, a.truncated) == (None, None)
+    assert a.provenance == [{"rule": "figure_text_noise", "before": loop[:40], "truncated": "length"}]
+    assert (b.figure_text, c.figure_text, c.truncated) == ("20주\n21주\n양구군", "2026 국민 안전 수칙", "repetition")
+
+
 def test_header_rows_time_quarter_and_data_rows():
     # 시각·분기 머리글은 머리행, 병합 머리글 아래 행 이름이 있는 글 자료행·우연히 같은 값 자료행은 둘째 머리행이 아니다(검토 지적)
     time = "<table><tr><td>구분</td><td>09:00</td><td>12:00</td></tr><tr><td>기온</td><td>20.1</td><td>24.3</td></tr></table>"

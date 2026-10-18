@@ -184,7 +184,26 @@ def test_figure_image_text_and_meta():
 def test_report_rows_unchanged_without_new_golden_fields():
     r = cmp.evaluate({}, {"pages": {1: "normal"}}, {"seconds": 1.0, "pages": {"1": []}})
     labels = [line.strip("|").split("|")[0].strip() for line in cmp.render({"a": r}).splitlines()[2:]]
-    assert not {"그림 찾음", "그림 속 글자 읽음(포스터 줄)", "문서 정보 맞음(제목·기관·날짜)"} & set(labels)
+    assert not {"그림 찾음", "그림 속 글자 읽음(포스터 줄)", "문서 정보 맞음(제목·기관·날짜)", "그래프·지도 속 글자 읽음"} & set(labels)
+
+
+def test_figure_text_read_and_wrong_lines():
+    # 그래프·지도 속 글자: 정답 줄(2자 이상)이 그 자리 그림 블록 글에 있나, 글자가 든 줄 가운데 정답에도 그 자리 글자층에도 없는
+    # 낱말이 섞인 줄 — 숫자뿐인 줄·한 글자('N')는 세지 않고, 그림에 붙은 글자층 글('(a)')은 맞는 글이다
+    golden = {"pages": {1: "normal"},
+              "figure_text": [{"page": 1, "bbox": [0, 0, 100, 100], "lines": ["모기지수", "20주", "인천", "서구(2)", "N"]},
+                              {"page": 1, "bbox": [200, 0, 300, 100], "lines": ["평년 평균 기온"]}]}
+    run = {"pages": {"1": [
+        cmp._blk("figure", [2, 2, 98, 98], True, "20주 21주\n인천 서구(2)\n0.5 1.0\n13월 모기지수\nN\n(a)", "chart"),   # 21주·13월은 없다
+        cmp._blk("text", [10, 80, 60, 95], True, "평년 평균 기온", "text"),       # 글 블록은 그림 글이 아니다
+        cmp._blk("figure", [200, 0, 300, 100], True, "", "chart")]}}            # 글을 읽지 않은 그래프
+    r = cmp.evaluate({1: [("(a)", [4, 4, 14, 12])]}, golden, run)
+    assert r["figure_text"] == {"read": [4, 5], "wrong_lines": [2, 4]}
+    rows = {c[0]: c[1:] for c in ([s.strip() for s in line.strip("|").split("|")]
+                                  for line in cmp.render({"a": r, "b": cmp.evaluate({}, {"pages": {1: "normal"}}, run)})
+                                  .splitlines())}
+    assert rows["그래프·지도 속 글자 읽음"] == ["4/5 (80.0%)", "—"]
+    assert rows["그래프·지도 글 중 정답에 없는 줄(오독·지어냄)"] == ["2/4 (50.0%)", "—"]
 
 
 def test_list_item_split_into_two_blocks():

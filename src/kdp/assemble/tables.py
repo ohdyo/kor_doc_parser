@@ -356,9 +356,10 @@ def _letters(text: str) -> bool:
 
 def _noise(f: Block) -> None:
     """글 없는 그림(만화·삽화)에서 그림 속 글자 읽기가 지어낸 글 — 가나·기호뿐인 글('ふ～～～'·'うっ')은 버린다(실측 test2.pdf
-    8쪽 — CPU·GPU 모두, GPU 는 길이 한도로 잘림). 버린 글의 잘림 표시는 기록으로 옮긴다(출력에 남은 잘린 글이 없다). 잘린
-    글이라도 글자가 있으면 둔다(QC 가 잘림으로 센다)."""
-    if f.figure_text and not _letters(f.figure_text):
+    8쪽 — CPU·GPU 모두, GPU 는 길이 한도로 잘림). 그래프 글은 잘렸으면 모두 버린다 — 그래프 속 글자는 짧아 한도까지 간 글은
+    지어낸 되풀이고 그 앞줄의 값도 그림에 없었다(실측 test3.pdf — 등고선 지도 '203.0, 203.1 …', 그래프 '100.0 / 경수량' 되풀이).
+    버린 글의 잘림 표시는 기록으로 옮긴다(출력에 남은 잘린 글이 없다). 그 밖의 잘린 글은 글자가 있으면 둔다(QC 가 잘림으로 센다)."""
+    if f.figure_text and (not _letters(f.figure_text) or f.type == "chart" and f.truncated):
         f.provenance = (f.provenance or []) + [{"rule": "figure_text_noise", "before": f.figure_text[:40],
                                                 **({"truncated": f.truncated} if f.truncated else {})}]
         f.figure_text, f.truncated = None, None

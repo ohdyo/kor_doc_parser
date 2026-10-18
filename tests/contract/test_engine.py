@@ -25,8 +25,8 @@ def _respond(q, im):
     return 200, "글", "stop"
 
 
-@pytest.mark.parametrize("d14", [True, False])
-def test_engine_save(tmp_path, settings, d14):
+@pytest.mark.parametrize("d14,chart_ocr,chart_text", [(True, False, "분기 | 매출\n1분기 | 120"), (False, True, "글"), (False, False, "")])
+def test_engine_save(tmp_path, settings, d14, chart_ocr, chart_text):
     page = np.full((1700, 1200, 3), 255, np.uint8)
     page[150:300, 150:400] = 0
     page[600:900, 100:600] = 40
@@ -35,6 +35,7 @@ def test_engine_save(tmp_path, settings, d14):
         s.env.vlm.backend, s.env.vlm.server_url, s.env.vlm.api_model_name = "vllm-server", vlm.url, "served-name"
         s.env.vlm.api_key = "sk-SECRET"
         s.parse.paddle_vl.use_ocr_for_image_block = s.parse.paddle_vl.use_chart_recognition = d14
+        s.parse.paddle_vl.use_ocr_for_chart_block = chart_ocr          # 그래프 표 읽기를 끈 채 그래프 속 글자만 읽기
         kw = wrapper_kwargs(s)
         kw["use_layout_detection"] = False                     # 검출기 가중치 없이 만든다
         ocr = _wrapper_class()(**kw)
@@ -51,7 +52,7 @@ def test_engine_save(tmp_path, settings, d14):
     assert (tmp_path / "p0001.json").exists() and (tmp_path / "p0001.sidecar.json").exists()
     chart = raw.blocks[1]
     assert chart.img and (tmp_path / "imgs" / chart.img).exists()          # 차트 인식을 켜도 크롭은 우리가 남긴다
-    assert bool(chart.content) == d14
+    assert chart.content == chart_text
     fig = next(iter(raw.table_imgs.values()))
     assert fig["in_html"] is False and (tmp_path / "imgs" / fig["name"]).exists()   # HTML 에 안 나온 표 안 그림도 남긴다
 

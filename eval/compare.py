@@ -38,6 +38,7 @@ _TAG = re.compile(r"<[^>]+>")
 _SKIP = re.compile(r"[\s|#*_`\-–•·ㆍᆞ▪▫◦○●■□◆◇▶►]+")    # 공백·마크업·글머리표(파서마다 따로 떼어 둔다)
 _DOTS = re.compile(r"\.{2,}")                              # 목차 점선
 _QUOTES = str.maketrans({"‘": "'", "’": "'", "‚": "'", "‛": "'", "“": '"', "”": '"', "„": '"', "‟": '"'})   # 표기 차이
+_LETTER = re.compile(r"[^\W\d_]")                          # 한글·영문·한자 같은 글자(숫자·기호가 아닌 것)
 
 
 def norm(s: str) -> str:
@@ -379,6 +380,8 @@ def evaluate(segs: dict, golden: dict, run: dict) -> dict:
         out["figures"] = _figures(pages, kinds)
     if lines := [(t["page"], s) for t in golden.get("image_text", []) for s in map(norm, t["lines"]) if len(s) >= MIN_SEG]:
         out["image_text"] = [sum(present(s, body.get(p) or "") for p, s in lines), len(lines)]
+    if entries := golden.get("figure_text"):
+        out["figure_text"] = _figure_text(pages, entries, segs)
     if gm := golden.get("meta"):
         m = run.get("meta")
         out["meta"] = None if m is None else [sum(" ".join(str(m.get(k, "")).split()) == " ".join(str(v).split())
@@ -408,6 +411,25 @@ def _figures(pages: dict, figs: list[dict]) -> dict:
     leak = sum(len(norm(b["text"])) for g in figs if g["kind"] in ("chart", "photo", "map") for b in pages.get(g["page"], [])
                if b["body"] and b["bbox"] and b["kind"] == "text" and _inter(g["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"]))
     return {"found": [found, len(figs)], "caption_ok": [cap, sum(g.get("caption") is not None for g in figs)], "leak_chars": leak}
+
+
+def _figure_text(pages: dict, entries: list[dict], segs: dict) -> dict:
+    """그래프·지도 속 글자 — 정답 그림 자리의 그림 블록 글에 정답 줄(2자 이상)이 있나(읽음), 그 글에서 글자가 든 줄 가운데 정답
+    줄에도 그 자리 글자층에도 없는 낱말(2자 이상)이 섞인 줄(오독·지어냄 — 숫자뿐인 낱말과 한 글자는 정답에 넣지 않았으니 보지
+    않고, 그림에 붙은 글자층 글('(a)')은 맞는 글이다)."""
+    read = total = wrong = lines = 0
+    for g in entries:
+        hits = _fig_blocks(pages, g)
+        text = norm("".join(b["text"] for b in hits))
+        want = [s for s in map(norm, g["lines"]) if len(s) >= 2]
+        read += sum(present(s, text) for s in want)
+        total += len(want)
+        ref = "".join(want) + "".join(norm(s) for s, box in segs.get(g["page"], []) if _center_in(box, [g["bbox"]]))
+        for line in (x for b in hits for x in b["text"].splitlines()):
+            words = [w for w in map(norm, line.split()) if len(w) >= 2 and _LETTER.search(w)]
+            lines += bool(words)
+            wrong += any(w not in ref for w in words)
+    return {"read": [read, total], "wrong_lines": [wrong, lines]}
 
 
 # ---- 보고 ----
@@ -443,6 +465,10 @@ def render(report: dict) -> str:
              ("그림 영역에서 읽은 글자 수", lambda r: "—" if r["figure_chars"] is None else str(r["figure_chars"]))]
     if has("image_text"):
         rows.append(("그림 속 글자 읽음(포스터 줄)", lambda r: _frac(r["image_text"]) if "image_text" in r else "—"))
+    if has("figure_text"):
+        rows += [("그래프·지도 속 글자 읽음", lambda r: _frac(r["figure_text"]["read"]) if "figure_text" in r else "—"),
+                 ("그래프·지도 글 중 정답에 없는 줄(오독·지어냄)",
+                  lambda r: _frac(r["figure_text"]["wrong_lines"]) if "figure_text" in r else "—")]
     if has("meta"):
         rows.append(("문서 정보 맞음(제목·기관·날짜)", lambda r: _frac(r["meta"]) if r.get("meta") else "—"))
     rows.append(("처리 시간(쪽당)", lambda r: f"{r['seconds']:.0f}초 ({r['seconds'] / r['n_pages']:.1f}초)"

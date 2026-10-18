@@ -123,6 +123,7 @@ class PaddleVLEngine:
         from .hooks import install_response_hook
 
         self.hooked = install_response_hook(self._ocr.paddlex_pipeline.vl_rec_model)
+        self._ocr.paddlex_pipeline.kdp_chart_ocr = p.use_ocr_for_chart_block
         cfg = self._ocr._merged_paddlex_config
         want = PIPELINE_NAMES.get(p.pipeline_version)
         if want and cfg.get("pipeline_name") != want:      # paddlex_config 를 주면 pipeline_version 은 무시되므로 맞는지 본다

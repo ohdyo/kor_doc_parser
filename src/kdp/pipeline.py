@@ -38,7 +38,7 @@ from .render_md import render_markdown
 from .schema import Document, ParserInfo, Source
 from .textlayer.extract import apply_text_layer, display_chars, mark_hidden
 
-ASSEMBLE_CODE_VERSION = "9"
+ASSEMBLE_CODE_VERSION = "10"
 JSONL_FIELDS = OUTPUT_FIELDS
 
 

@@ -51,7 +51,7 @@ def _closed_port_url():
         return f"http://127.0.0.1:{s.getsockname()[1]}/v1"
 
 
-def _run(respond, boxes_for, pages, ocr_images=False, url=None):
+def _run(respond, boxes_for, pages, ocr_images=False, url=None, chart_ocr=False):
     with FakeVLM(respond) as vlm:
         pred = paddlex.create_predictor(
             model_name="PaddleOCR-VL-1.6-0.9B", batch_size=-1,
@@ -62,7 +62,7 @@ def _run(respond, boxes_for, pages, ocr_images=False, url=None):
         p.use_doc_preprocessor, p.use_layout_detection = False, True
         p.layout_det_model, p.vl_rec_model = FakeLayout(boxes_for), pred
         p.use_chart_recognition = p.use_seal_recognition = False
-        p.use_ocr_for_image_block = ocr_images
+        p.use_ocr_for_image_block, p.kdp_chart_ocr = ocr_images, chart_ocr
         p.format_block_content = False
         p.batch_sampler, p.img_reader, p.crop_by_boxes = ImageBatchSampler(batch_size=64), ReadImage("BGR"), CropByBoxes()
         p.use_queues, p.merge_layout_blocks, p.layout_prep_cpu_workers = True, True, 0
@@ -173,3 +173,22 @@ def test_merge_group_and_table_figures():
     assert blocks[2].content == "" and blocks[2].kdp_merged_into == 1 and blocks[2].kdp is None
     assert blocks[1].kdp["raw"] == "글" and blocks[4].kdp_merged_into is None
     assert blocks[3].kdp is None                                                    # 그림은 VLM 호출 없음
+
+
+@pytest.mark.parametrize("chart_ocr", [True, False])
+def test_chart_ocr_sends_chart_as_ocr(chart_ocr):
+    """그래프 표 읽기를 끈 채 그래프 속 글자 읽기를 켜면 그래프도 'OCR:' 로 간다(표 읽기 질문은 없다) — 크롭은 그대로 남고,
+    다른 글 블록과 묶이지 않는다. 끄면 설치본처럼 그래프를 VLM 에 보내지 않는다."""
+    chart = (150, 150, 600, 400)
+    boxes = lambda k: [_box("chart", chart, cls_id=3, order=1), _box("text", (150, 405, 600, 440), order=2)]
+    asked = []
+
+    def respond(q, im):
+        asked.append((q, im.size))
+        return 200, "모기지수\n20주" if im.size == (450, 250) else "글", "stop"
+
+    res = _run(respond, boxes, _pages(1, paint=[chart]), chart_ocr=chart_ocr)[0]["parsing_res_list"]
+    assert [b.label for b in res] == ["chart", "text"] and res[0].image is not None
+    assert all(q == "OCR:" for q, _ in asked)
+    assert ((("OCR:", (450, 250)) in asked), res[0].content) == ((True, "모기지수\n20주") if chart_ocr else (False, ""))
+    assert (res[0].kdp or {}).get("raw") == ("모기지수\n20주" if chart_ocr else None)

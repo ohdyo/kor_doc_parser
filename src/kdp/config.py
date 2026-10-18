@@ -68,6 +68,7 @@ class PaddleVL(_Cfg):
     paddlex_config: str = "paddlex_vl16.yaml"
     max_new_tokens: int = 4096
     use_ocr_for_image_block: bool = True
+    use_ocr_for_chart_block: bool = True  # D14 — 그래프·지도 속 보이는 글자도 그림처럼 'OCR:' 로(표로 읽지 않는다)
     use_chart_recognition: bool = False   # D14 — 그래프 표 읽기는 지어낸 값을 냈다(테스트_결과 6.5)
     use_seal_recognition: bool = False
     page_batch: int = 32

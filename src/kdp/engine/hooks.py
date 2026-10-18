@@ -70,6 +70,15 @@ def _inside(box, outer) -> bool:
 
 class KdpPipeline(_vl._PaddleOCRVLPipeline):
     kdp_plans: dict = {}                                      # id(쪽 이미지) → SkipPlan — 엔진이 묶음마다 채운다
+    kdp_chart_ocr: bool = False                               # 그래프 블록 속 글자 읽기 — 엔진이 설정대로 켠다
+
+    def _paddleocr_vl_collect_page_vlm_entries_core(self, page_idx, blocks_for_img, imgs_in_doc_for_img, layout_prep_cfg):
+        """훅 D — 그래프 표 읽기를 끈 설치본은 그래프를 VLM 에 보내지 않는 라벨로 둔다. 그 목록에서만 빼면 그림처럼 'OCR:' 로 간다.
+        병합하지 않을 라벨(같은 목록)은 앞 단계가 이미 썼으므로 그래프는 그대로 다른 블록과 묶이지 않는다."""
+        if self.kdp_chart_ocr and "chart" in layout_prep_cfg["image_labels"]:
+            layout_prep_cfg = {**layout_prep_cfg, "image_labels": [x for x in layout_prep_cfg["image_labels"] if x != "chart"]}
+        return super()._paddleocr_vl_collect_page_vlm_entries_core(page_idx, blocks_for_img, imgs_in_doc_for_img,
+                                                                   layout_prep_cfg)
 
     def _kdp_skip(self, image, out):
         """훅 C — 쪽 준비 결과에서 건너뛸 블록의 VLM 입력을 뺀다. 넘긴 배열이 같은 객체로 온다(방향 보정을 끈 쪽)."""
