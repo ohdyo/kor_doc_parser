@@ -210,3 +210,42 @@ def test_table_column_order_and_unknown_symbol():
            for c in _chars("사업 관리 6건 완료 # 데이터 표준화 점검")]
     out = _cells(_fix_table("<table><tr><td>사업 관리 6건 왼료</td><td>데이터 표준화 점검</td></tr></table>", sym)[0])
     assert out[0] == "사업 관리 6건 완료"                              # 뜻 모를 기호가 있어도 다른 칸은 고친다
+
+
+def test_table_cell_quotes_do_not_block_fix():
+    # 모델이 칸의 따옴표를 빠뜨리고 한 글자를 잘못 읽었다('평년(’23-’25)' → '펑년(23-25)', 실측 test2.pdf GPU) — 따옴표를 빼고 견준다
+    html = "<table><tr><td>펑년(23-25)</td><td>18.4</td></tr><tr><td>펑년 대비</td><td>0.3</td></tr></table>"
+    fixed, n = _fix_table(html, _tuples(_chars("평년(’23-’25) 18.4\n평년 대비 0.3")))
+    assert "<td>평년(’23-’25)</td>" in fixed and n == 1
+    assert "<td>펑년 대비</td>" in fixed                               # 짧은 칸(4자)은 한 글자도 다르면 맞추지 않는다(20% 한도)
+
+
+def test_table_cell_edge_quotes_kept():
+    # 따옴표를 빼고 맞춰도 칸 앞뒤 따옴표는 레이어 그대로 둔다(검토 지적 — ’23년·“표어”)
+    html = "<table><tr><td>’23년 대비 증감</td><td>“함께 만드는 안전”</td></tr></table>"
+    fixed, n = _fix_table(html, _tuples(_chars("’23년 대비 증감 “함께 만드는 안전”")))
+    assert fixed == html and n == 0
+
+
+def test_blocks_without_layer_chars_marked():
+    # 글자층 있는 쪽에서 자리에 레이어 글자가 없는 글 블록(그림에 그려진 글)에 표시 — 그림 글 판정이 쓴다. 모델 글이 레이어와
+    # 같아 바꾸지 않은 블록·글자층 없는 쪽, 글 블록 대부분이 글자층이 없는 쪽(스캔 쪽에 머리말만 글자 — 검토 지적)은 표시하지 않는다
+    page = Page(page_no=1, sheet_no=1, size=(595, H), blocks=[
+        Block(id="p1.b01", type="text", bbox=(70, 90, 500, 104), text=BODY),
+        Block(id="p1.b02", type="figure_title", bbox=(70, 300, 300, 320), text="그림 속 제목")])
+    doc = Document(doc_id="sha256:ab", source=Source(paths=["a.pdf"], pages=1),
+                   parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"), pages=[page])
+    out = apply_text_layer(doc, {1: _chars(BODY, x=72, y=92)}, INFO, prefer=True).pages[0].blocks
+    assert out[0].provenance is None and out[1].provenance == [{"rule": "no_layer_chars"}]
+    page.blocks += [Block(id=f"p1.b0{i}", type="text", bbox=(70, 400 + 40 * i, 500, 420 + 40 * i), text=OTHER) for i in (3, 4)]
+    out = apply_text_layer(doc, {1: _chars(BODY, x=72, y=92)}, INFO, prefer=True).pages[0].blocks
+    assert not any(b.provenance for b in out[1:])
+
+
+def test_table_cell_quote_misreads_fixed():
+    # 따옴표 든 짧은 칸의 한 글자 오독('’24넌도' — 허용 오차는 따옴표까지 센 칸 길이로), 모델이 ’ 를 ° 로 읽은 칸(앞 칸 '구분' 의
+    # 글자를 끌어오지 않는다), 글자층 '℃' 를 '°C' 로 읽은 칸도 글자층 글로 고친다(검토 지적)
+    html = ("<table><tr><td>구분</td><td>°23년도</td><td>’24넌도</td></tr>"
+            "<tr><td>펑균기온(°C)</td><td>20.6</td><td>19.6</td></tr></table>")
+    fixed, n = _fix_table(html, _tuples(_chars("구분 ’23년도 ’24년도\n평균기온(℃) 20.6 19.6")))
+    assert "<td>’23년도</td><td>’24년도</td>" in fixed and "<td>평균기온(℃)</td>" in fixed and n == 3

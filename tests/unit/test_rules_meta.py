@@ -443,3 +443,31 @@ def test_photo_press_page_is_not_cover():
                           ("image", (80, 200, 520, 500), None), ("text", (80, 510, 520, 524), "▲ 방제 현장 점검 모습")),
                     _page(2, BODY)))
     assert doc.pages[0].keep and doc.pages[0].page_class != "cover"           # 시각이 붙은 날짜 칸은 표지 날짜가 아니다
+
+
+def test_press_date_in_one_masthead_block():
+    # '보도시점 … 배포 …' 두 칸을 검출기가 한 머리말 블록으로 잡았다(실측 test3.pdf) — 버린 블록이어도 보도 날짜를 읽는다
+    doc = _run(_doc(_page(1, ("header", (260, 82, 316, 96), "보도자료"),
+                          ("header", (221, 111, 536, 126), "보도시점 2026. 10. 2.(금) 14:00 배포 2026. 10. 1.(목) 10:00"),
+                          ("doc_title", (70, 159, 529, 202), "9월 평균기온 평년보다 높아"), BODY)))
+    b = doc.pages[0].blocks
+    assert (b[1].type, b[1].keep, b[1].meta) == ("doc_meta", False, {"date": "2026-10-02"})
+    assert doc.meta["date"] == "2026-10-02"
+
+
+def test_press_date_prefers_release_inside_one_block():
+    # 한 머리말 블록에 '배포 … 보도시점 …' 차례로 들어도 꼬리표마다 따로 읽어 보도 날짜를 앞세운다(검토 지적)
+    doc = _run(_doc(_page(1, ("header", (221, 111, 536, 126), "배포 2026. 10. 1.(목) 10:00 보도시점 2026. 10. 2.(금) 14:00"),
+                          ("doc_title", (70, 159, 529, 202), "9월 평균기온 평년보다 높아"), BODY)))
+    assert doc.meta["date"] == "2026-10-02"
+
+
+def test_press_block_with_contact_line_kept():
+    # 보도·배포 줄과 담당 부서 줄을 검출기가 글 한 블록으로 잡았다 — 블록은 지우지 않고(담당 부서 글이 출력에 남게) 날짜만
+    # block.meta 에 단다(검토 지적)
+    doc = _run(_doc(_page(1, ("text", (221, 100, 536, 140),
+                              "보도일시 2026. 10. 2.(목) 12:00\n배포일시 2026. 10. 1.(수) 14:00\n담당부서 기후정책과 기후예측팀"),
+                          ("doc_title", (70, 159, 529, 202), "9월 평균기온 평년보다 높아"), BODY)))
+    b = doc.pages[0].blocks[0]
+    assert (b.type, b.keep, b.meta) == ("text", True, {"date": "2026-10-02"})
+    assert doc.meta["date"] == "2026-10-02"

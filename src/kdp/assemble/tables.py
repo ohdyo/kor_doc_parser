@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html as htmllib
 import re
+import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -27,7 +28,15 @@ _TAG_ONLY = re.compile(r"(?:붙\s*임|별\s*첨|첨\s*부|부\s*록|별\s*지|�
 _ROW = re.compile(r"<tr[^>]*>.*?(?=<tr[\s>]|</table>|$)", re.S | re.I)
 _CELL = re.compile(r"<t([dh])([^>]*)>(.*?)</t[dh]>", re.S | re.I)
 MAX_GAP = 15.0                # 표와 제목·단위·출처 블록 사이 세로 틈(pt)
-HEADER_MAX_CHARS = 20
+FIG_GAP = 30.0                # '【그림 n】' 처럼 꼴이 분명한 그림 제목은 이만큼 떨어져도 잇는다(실측 test3.pdf 16pt)
+HEADER_MAX_CHARS = 20         # 머리글 칸 글자 수(띄어쓰기 뺀) 상한
+_NUMERIC = re.compile(r"[\d\s,.%\-–~+()℃°/:]+")   # 숫자 칸(값·연도·날짜·전화) — 본문 칸·칸 이름 행 판정
+_DIGITS = re.compile(r"[\d,.%\s\-~]+")              # 첫 행의 숫자 칸('2025'·'1,000') — '09:00'·'1/4' 은 시각·분기 머리글이다
+_PHONE = re.compile(r"\d{2,4}\s*[-)]\s*\d{3,4}\s*-\s*\d{4}")   # 전화번호가 든 칸('과장 ○○○ (043-…)') — 담당 부서 표의 자료 행
+NUMERIC_BODY = 0.6            # 본문 칸 중 이만큼 이상이 숫자면 숫자 표 — 머리글이 숫자보다 긴 것이 보통이다
+PANEL = re.compile(r"\s*[(（]?\s*[a-zA-Z가-하]\s*[)）]\s*")   # 나란한 그림의 패널 표지 '(a)'·'(나)'
+PANEL_GAP = 6.0               # 패널 표지와 그림 사이 세로 틈(pt)
+INSIDE = 0.9                  # 그림 상자 안에 이만큼 이상 든 글 블록은 그림 속 글이다
 EMPTY_FAILED = 0.9            # 거의 모든 칸이 비면 인식 실패로 본다(빈 서식 표는 절반쯤 비어도 정상)
 LAYER_FAILED = 0.8            # born-digital 표에서 레이어 글자 중 모델 표에 있는 비율이 이보다 낮으면 인식 실패(행을 빠뜨림 등)
 LAYOUT_MIN_CHARS = 30         # 1~2칸 표의 글자가 이보다 많으면 배치용 표(글상자)로 본다
@@ -80,17 +89,85 @@ def parse_rows(html: str) -> list[list[Cell]]:
              for c in _CELL.finditer(row)] for row in _ROW.findall(html)]
 
 
+def _labels(row: list[Cell]) -> bool:
+    """칸 이름 행 — 모든 칸이 짧은 글이고 숫자 칸이 없다."""
+    return len(row) >= 2 and all(c.text and len(_flat(c.text)) <= HEADER_MAX_CHARS and not _NUMERIC.fullmatch(c.text)
+                                 for c in row)
+
+
+def _numbers(row: list[Cell]) -> bool:
+    texts = [c.text for c in row if c.text]
+    return bool(texts) and 2 * sum(bool(_NUMERIC.fullmatch(t)) for t in texts) >= len(texts)
+
+
+def _flat(text: str) -> str:
+    return "".join(text.split())
+
+
+def _grid(first: list[Cell], second: list[Cell]) -> tuple[list[tuple[int, int, bool]], dict[int, str]]:
+    """첫 행 칸마다 (시작 열, 끝 열, 세로 병합)과 둘째 행 칸의 시작 열 → 글 — 첫 행 세로 병합 칸 아래 열에는 둘째 행 칸이 없다."""
+    spans, col = [], 0
+    for c in first:
+        spans.append((col, col + c.colspan, c.rowspan > 1))
+        col += c.colspan
+    free = [i for i in range(col) if not any(tall and a <= i < b for a, b, tall in spans)]
+    at, k = {}, 0
+    for c in second:
+        if k < len(free):
+            at[free[k]] = c.text
+        k += c.colspan
+    return spans, at
+
+
+def _num(text: str) -> float | None:
+    try:
+        return float(text.replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _sub_labels(first: list[Cell], second: list[Cell]) -> bool:
+    """가로 병합 아래 칸 이름 행 — 모든 칸이 짧은 글이고 모두 가로 병합 칸 아래 있다(첫 행 보통 칸 아래 행 이름이 있으면 자료 행)."""
+    spans, at = _grid(first, second)
+    return _labels(second) and all(any(b - a > 1 and a <= i < b for a, b, _ in spans) for i in at)
+
+
+def _repeated(first: list[Cell], second: list[Cell], below: list[list[Cell]]) -> bool:
+    """가로 병합 칸마다 그 아래 둘째 행 칸 이름이 똑같이 되풀이된다('연도·값' × 5, '21·22·23·24' × 기온·강수 — 실측 test3.pdf,
+    test2.pdf GPU 출력). 숫자 칸 이름은 셋 이상 늘어나는 차례일 때만 — 우연히 같은 값('1·0')은 자료 행이다. 글 칸 이름이
+    아래 행(below)의 같은 열 값으로 다시 나오면 자료 행이다('적합·해당 없음' × 1차·2차 점검)."""
+    spans, at = _grid(first, second)
+    groups = [tuple(at.get(i) for i in range(a, b)) for a, b, tall in spans if b - a > 1 and not tall]
+    if len(groups) < 2 or len(set(groups)) != 1 or not all(groups[0]) or len(set(groups[0])) != len(groups[0]):
+        return False
+    nums = [_num(t) for t in groups[0]]
+    if all(v is None for v in nums):
+        cols = [i for a, b, tall in spans if b - a > 1 and not tall for i in range(a, b)]
+        return not {_grid(first, r)[1].get(i) for r in below for i in cols} & set(groups[0])
+    return len(nums) >= 3 and None not in nums and all(a < b for a, b in zip(nums, nums[1:]))
+
+
 def header_rows(rows: list[list[Cell]]) -> int:
-    """첫 행이 짧은 글자들이고 본문 칸보다 길지 않으면 머리행. 첫 행에 가로 병합이 있으면 세로 병합 깊이까지."""
+    """첫 행이 짧은 글자들이고(숫자·전화 칸 없음) 본문 칸보다 길지 않으면 머리행 — 본문이 숫자 위주인 표는 길이를 견주지
+    않는다(머리글이 숫자보다 길다, 실측 test3.pdf). 첫 행에 가로 병합이 있으면 세로 병합 깊이까지, 병합 아래 칸 이름 행
+    ('번호·지점명·연도·값' — 그 아래 행이 숫자, 또는 병합 칸마다 되풀이되는 이름)까지. 첫 행이 표 전체를 덮는 제목 칸 하나면
+    그 아래는 칸 이름 행으로 보지 않는다(개요표 '사업명 | …' 는 자료 행). 가로 병합 머리글의 대각선 머리칸은
+    비어 있어도 된다(모델이 머리칸 글을 둘째 행에 둔다)."""
     if len(rows) < 2 or not rows[0]:
         return 0
     first = rows[0]
-    if any(not c.text or len(c.text) > HEADER_MAX_CHARS or re.fullmatch(r"[\d,.%\s\-~]+", c.text) for c in first):
+    wide = any(c.colspan > 1 for c in first)
+    if any(not c.text or len(_flat(c.text)) > HEADER_MAX_CHARS or _DIGITS.fullmatch(c.text) or _PHONE.search(c.text)
+           for c in (first[1:] if wide and not first[0].text else first)):
         return 0
-    body = [len(c.text) for r in rows[1:] for c in r if c.text]
-    if body and max(len(c.text) for c in first) > max(body):
+    body = [c.text for r in rows[1:] for c in r if c.text]
+    numeric = sum(bool(_NUMERIC.fullmatch(t)) for t in body) >= NUMERIC_BODY * len(body)
+    if body and not numeric and max(len(c.text) for c in first) > max(len(t) for t in body):
         return 0
-    n = max(c.rowspan for c in first) if any(c.colspan > 1 for c in first) else 1
+    n = max(c.rowspan for c in first) if wide else 1
+    if wide and n == 1 and len(rows) > 2 and (len(first) > 1 and _sub_labels(first, rows[1]) and _numbers(rows[2])
+                                              or _repeated(first, rows[1], rows[2:])):
+        n = 2
     return min(n, len(rows) - 1)
 
 
@@ -129,10 +206,10 @@ def _gap(page: Page, b: Block, t: Block) -> tuple[float, float]:
     return tb[1] - bb[3], bb[1] - tb[3]
 
 
-def _dist(page: Page, b: Block, t: Block) -> float:
-    """블록과 표·그림 사이 세로 거리(위든 아래든). 가로로 안 겹치거나 멀면 무한대."""
+def _dist(page: Page, b: Block, t: Block, lim: float = MAX_GAP) -> float:
+    """블록과 표·그림 사이 세로 거리(위든 아래든). 가로로 안 겹치거나 lim 보다 멀면 무한대."""
     up, down = _gap(page, b, t)
-    return min(d for d in (up, down) if d >= -3) if (-3 <= up <= MAX_GAP or -3 <= down <= MAX_GAP) else float("inf")
+    return min(d for d in (up, down) if d >= -3) if (-3 <= up <= lim or -3 <= down <= lim) else float("inf")
 
 
 def _link(page: Page, t: Block) -> None:
@@ -175,27 +252,30 @@ def bracket_title(text: str | None) -> bool:
 def _link_figure(page: Page, f: Block) -> None:
     """그림·차트 바로 위·아래(MAX_GAP 안)의 제목 — '<그림 n>'(아래 먼저 — 관례) → 괄호 제목(위 먼저) → 검출기 그림 제목
     (figure_title, 위 먼저 — 그래프 바로 아래 축 이름도 figure_title 로 잡힌다, 실측 — 읽기 순서로도 바로 앞뒤일 때만) 차례로,
-    같으면 가까운 것. '<그림 2>는 …'
+    같으면 가까운 것. '<그림 n>' 은 FIG_GAP 까지 받되 MAX_GAP 밖이면 MAX_GAP 안 후보에 진다(제목을 위에 다는
+    문서에서 쪽 끝에 남은 다음 그림 제목 — MAX_GAP 안 후보가 하나라도 있으면 그쪽에서 고른다). '<그림 2>는 …'
     같은 본문 참조와 괄호로 감싼 구역·문서 제목 라벨(paragraph_title·doc_title)은 받지 않는다. 다른 표·그림에 더 가까운
     블록은 그쪽 것이고, 나란한 그림 위의 한 제목은 함께 받는다."""
     others = [o for o in page.blocks if o is not f and o.merged_into is None and o.type in ("table", "image", "chart")]
-    order = [o for o in page.blocks if o.keep and o.merged_into is None]
+    parts = {p["with"] for o in others + [f] for p in o.provenance or [] if p.get("rule") == "figure_part"}
+    order = [o for o in page.blocks if o.keep and o.merged_into is None or o.id in parts]   # 그림 글로 묶인 줄도 사이 블록이다
     near = []
     for b in page.blocks:
         if b is f or not b.keep or b.merged_into or not b.text or b.type in ("table", "image", "chart"):
             continue
+        fig = bool(FIG_CAPTION.match(b.text) and appendage(b.text))
+        lim = FIG_GAP if fig else MAX_GAP
         up, down = _gap(page, b, f)
-        side = "up" if -3 <= up <= MAX_GAP else "down" if -3 <= down <= MAX_GAP else None
+        side = "up" if -3 <= up <= lim else "down" if -3 <= down <= lim else None
         if side is None:
             continue
         mine = up if side == "up" else down
-        fig = bool(FIG_CAPTION.match(b.text) and appendage(b.text))
         bracket = b.type in ("text", "figure_title") and bracket_title(b.text)
         weak = not (fig or bracket) and b.type == "figure_title" and _beside(order, b, f)   # 라벨뿐인 줄은 읽기 순서로도 바로 앞뒤
-        if (fig or bracket or weak) and not any(_dist(page, b, o) < mine for o in others):
-            near.append((0 if fig else 1 if bracket else 2, side != ("down" if fig else "up"), mine, b))
+        if (fig or bracket or weak) and not any(_dist(page, b, o, lim) < mine for o in others):
+            near.append((mine > MAX_GAP, 0 if fig else 1 if bracket else 2, side != ("down" if fig else "up"), mine, b))
     if near:
-        f.caption_id = min(near, key=lambda x: x[:3])[3].id
+        f.caption_id = min(near, key=lambda x: x[:4])[4].id
 
 
 def _beside(order: list[Block], a: Block, b: Block) -> bool:
@@ -260,10 +340,77 @@ def tables(doc: Document) -> Document:
                 t.header_rows, t.html = n, _mark_th(t.html, n)
             t.route, t.route_reason = _route(t, rows)
             _link(page, t)
-        for f in page.blocks:
-            if f.type in ("image", "chart") and f.keep and f.merged_into is None:
-                _link_figure(page, f)
+        figs = [f for f in page.blocks if f.type in ("image", "chart") and f.keep and f.merged_into is None]
+        for f in figs:
+            _noise(f)
+            _absorb(page, f)
+        for f in figs:                                             # 그림 글을 모두 묶은 뒤 — 묶인 줄을 다른 그림 제목으로 잇지 않게
+            _link_figure(page, f)
     return doc
+
+
+def _letters(text: str) -> bool:
+    """가나가 아닌 글자·숫자가 있나 — 한글·영문·한자·전각 숫자는 글, 가나와 기호뿐이면 지어낸 글."""
+    return any(ch.isalnum() and not "\u3040" <= ch <= "\u30ff" for ch in unicodedata.normalize("NFKC", text))
+
+
+def _noise(f: Block) -> None:
+    """글 없는 그림(만화·삽화)에서 그림 속 글자 읽기가 지어낸 글 — 가나·기호뿐인 글('ふ～～～'·'うっ')은 버린다(실측 test2.pdf
+    8쪽 — CPU·GPU 모두, GPU 는 길이 한도로 잘림). 버린 글의 잘림 표시는 기록으로 옮긴다(출력에 남은 잘린 글이 없다). 잘린
+    글이라도 글자가 있으면 둔다(QC 가 잘림으로 센다)."""
+    if f.figure_text and not _letters(f.figure_text):
+        f.provenance = (f.provenance or []) + [{"rule": "figure_text_noise", "before": f.figure_text[:40],
+                                                **({"truncated": f.truncated} if f.truncated else {})}]
+        f.figure_text, f.truncated = None, None
+
+
+def _side(page: Page, b: Block, f: Block) -> float:
+    """블록이 표·그림 바로 위·아래에 붙었으면(가로로 그 폭 안, 세로 틈 -3~PANEL_GAP) 그 틈, 아니면 무한대."""
+    x0, y0, x1, y1 = local(page, b.bbox)
+    fx0, fy0, fx1, fy1 = local(page, f.bbox)
+    gaps = [d for d in (fy0 - y1, y0 - fy1) if -3 <= d <= PANEL_GAP] if x0 >= fx0 - 3 and x1 <= fx1 + 3 else []
+    return min(gaps, default=float("inf"))
+
+
+def _named_near(page: Page, f: Block) -> bool:
+    """그림 위·아래에 번호·괄호 제목 후보('【그림 2】 …'·'< … >')가 따로 있나 — _link_figure 와 같은 꼴·거리."""
+    for o in page.blocks:
+        if o is f or not o.keep or o.merged_into or not o.text or o.type not in ("text", "figure_title"):
+            continue
+        fig = bool(FIG_CAPTION.match(o.text) and appendage(o.text))
+        if (fig or bracket_title(o.text)) and _dist(page, o, f, FIG_GAP if fig else MAX_GAP) < float("inf"):
+            return True
+    return False
+
+
+def _absorb(page: Page, f: Block) -> None:
+    """그림에 딸린 글 블록을 그림 글(figure_text)로 옮긴다 — 글자층이 있는 쪽에서 블록 자리에 글자층 글자가 없는(no_layer_chars,
+    글이 그림에 그려졌다) 블록 가운데 그림 상자 안에 든 것과 그림 바로 위·아래에 붙은 그림 제목 라벨 줄(검출기가 그래프 그림 맨
+    위 줄을 그림 밖 그림 제목으로 잡는다, 실측 test3.pdf — 그 그림에 번호·괄호 제목이 따로 있을 때만, 없으면 그 줄이 그림 제목이다),
+    그리고 그림 바로 위·아래의 패널 표지('(a)') — 위·아래 줄은 다른 표·그림이 그만큼 가깝지 않을 때만. 글자층 글자가 있는
+    글은 그림 상자가 덮어도 본문이다(그림 틀이 글 위로 겹친 쪽). 잘린·오류 블록은 옮기지 않는다. 옮긴 블록은 병합 묶음 규약대로."""
+    fx0, fy0, fx1, fy1 = local(page, f.bbox)
+    others = [o for o in page.blocks if o is not f and o.merged_into is None and o.type in ("table", "image", "chart")]
+    titled = _named_near(page, f)
+    for b in page.blocks:
+        if b is f or not b.keep or b.merged_into or not b.text or b.type not in ("text", "figure_title"):
+            continue
+        x0, y0, x1, y1 = local(page, b.bbox)
+        area = max(x1 - x0, 0) * max(y1 - y0, 0)
+        inner = max(min(x1, fx1) - max(x0, fx0), 0) * max(min(y1, fy1) - max(y0, fy0), 0)
+        if b.truncated or b.error:                       # 잘린·오류 블록은 그대로 둬 QC 가 센다
+            continue
+        bare = any(p.get("rule") == "no_layer_chars" for p in b.provenance or [])   # 글자층 있는 쪽인데 블록 자리에 글자가 없다
+        named = FIG_CAPTION.match(b.text) or CAPTION.match(b.text) or bracket_title(b.text)   # 그림 상자에 걸친 제목은 제목
+        inside = area and inner >= INSIDE * area and bare and not named
+        gap = _side(page, b, f)
+        beside = gap < float("inf") and not any(_side(page, b, o) <= gap for o in others)  # 위아래로 붙인 그림은 가까운 쪽(같으면 두기)
+        panel = beside and PANEL.fullmatch(b.text)
+        drawn = beside and b.type == "figure_title" and bare and not named and titled
+        if inside or panel or drawn:
+            f.figure_text = "\n".join(t for t in (f.figure_text, b.text.strip()) if t)
+            f.provenance = (f.provenance or []) + [{"rule": "figure_part", "with": b.id}]
+            b.keep, b.drop_reason, b.merged_into, b.text = False, "merged", f.id, None
 
 
 # 쪽 넘김 표의 열 수·머리행 비교는 설치본 PaddleX(merge_table.py)와 같은 기준을 여기서 다시 쓴다 — 그 함수들은 입력을

@@ -1,5 +1,6 @@
 """스캔 방향(기획서 4.3 규칙 12, 설계 3.7) — 레이어 글자가 없는 시트만, 여백 틀 20표가 한 각도로 모이고 잉크 투영의 글줄 방향·글 양이
 맞을 때만 세우고 좌표는 돌리기 전 시트로 되돌린다. 모델 시험은 가중치(PP-LCNet_x1_0_doc_ori)가 없으면 건너뛴다."""
+import itertools
 import json
 from types import SimpleNamespace
 
@@ -63,11 +64,12 @@ def test_is_scan_and_layerless():
 
 
 def _fake_votes(monkeypatch, votes):
-    """classify 흉내 — i 번째 부름(여백 i//4, np.rot90(틀, j=i%4))의 답이 원래 그림을 votes[i] 만큼 돌리면 서게."""
-    calls = iter(range(len(votes)))
+    """classify 흉내 — i 번째 부름(여백 i//4, np.rot90(틀, j=i%4))의 답이 원래 그림을 votes[i] 만큼 돌리면 서게. 판정을 여러 번
+    부르면(파이프라인) 같은 표를 되풀이한다."""
+    calls = itertools.count()
 
     def classify(img, env):
-        i = next(calls)
+        i = next(calls) % len(votes)
         return (votes[i] - i % 4) % 4 * 90, 0.9
     monkeypatch.setattr(orient, "classify", classify)
 
@@ -220,12 +222,15 @@ def _marks_in_order(out):
 @pytest.mark.parametrize("make,k", [(lambda f: body_nup_pdf(f, 25), 1), (lambda f: body_nup_pdf(f, 25), 2),
                                     (lambda f: body_nup_pdf(f, 25), 3), (handout_pdf, 3)],
                          ids=["body25-k1", "body25-k2", "body25-k3", "handout-k3"])
-def test_model_unsure_nup_scan_follows_lean(tmp_path, korean_font, settings, ori_env, make, k):
+def test_model_unsure_nup_scan_follows_lean(tmp_path, korean_font, settings, monkeypatch, make, k):
     """[회귀 3] 옆·거꾸로 스캔한 아래 쪽번호 모아찍기에서 방향 모델 표가 80% 에 못 미쳐도(표 14~15 : 5~6) 기운 방향의 칸 아래 쪽번호가
-    맞으면 그리로 세워 차례대로 나눈다 — 전에는 시트가 누운 채 통째로 엔진에 갔다."""
+    맞으면 그리로 세워 차례대로 나눈다 — 전에는 시트가 누운 채 통째로 엔진에 갔다. 모델 표는 15 : 5 로 고정한다 — 실제 모델 표는
+    장치마다 달라 GPU(A40)에서는 같은 시트를 확신했다(2026-10-16)."""
     data = make(korean_font)
+    up = (4 - k) % 4
+    _fake_votes(monkeypatch, [up] * 15 + [(up + 2) % 4] * 5)
     img, _ = _sheet(scanned(data, k=k))
-    assert orient.upright_k(img, ori_env) is None                      # 확신은 없다
+    assert orient.upright_k(img, Env()) is None                        # 확신은 없다
     out = _run_pages(tmp_path, scanned(data, k=k), settings)
     n = 2 if make is handout_pdf else 4
     assert [inp.rot90_k for _, inp in out] == [(4 - k) % 4] * n and _marks_in_order(out)

@@ -1,4 +1,4 @@
-"""실제 VLM(native, CPU) — 쪽당 수 분. pytest -m slow 로만 돈다."""
+"""실제 VLM — configs/env.yaml 의 방식대로(이 개발 서버는 native·CPU 로 쪽당 수 분, GPU 서버는 vLLM). pytest -m slow 로만 돈다."""
 import pytest
 
 from kdp.pipeline import parse_pdf
@@ -8,7 +8,6 @@ from tests.fixtures.synth import report_pdf
 @pytest.mark.slow
 def test_real_engine_one_page(tmp_path, korean_font, settings):
     s = settings.model_copy(deep=True)
-    s.env.vlm.backend = "native"
     pdf = tmp_path / "report.pdf"
     pdf.write_bytes(report_pdf(korean_font, pages=1))
     doc = parse_pdf(pdf, tmp_path / "out", s)
@@ -24,7 +23,6 @@ def test_m3_sample_text_absent_present(tmp_path, korean_font, settings):
     from tests.fixtures.synth import m3_sample_pdf
 
     s = settings.model_copy(deep=True)
-    s.env.vlm.backend = "native"
     pdf = tmp_path / "m3.pdf"
     pdf.write_bytes(m3_sample_pdf(korean_font))
     doc = parse_pdf(pdf, tmp_path / "out", s)

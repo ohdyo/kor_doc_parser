@@ -489,3 +489,161 @@ def test_numbered_section_title_beside_figure_is_not_caption():
     doc = tables(_doc(("text", (60, 100, 540, 114), "【단위: 천원】"), ("table", (60, 120, 540, 200), T),
                       ("text", (60, 300, 540, 314), "<개정 2024. 1. 1.>"), ("table", (60, 320, 540, 400), T)))
     assert [b.caption_id for b in doc.pages[0].blocks if b.type == "table"] == [None, None]   # 괄호 안 단위·개정 표시
+
+
+def test_header_rows_numeric_two_level_and_contact():
+    # 숫자 표는 머리글이 본문보다 길어도 머리행, 가로 병합 아래 칸 이름 행도 머리행(실측 test3.pdf). 전화가 든 첫 행은 자료 행
+    long = ("<table><tr><td>요소(단위)</td><td>2026년 9월(a)</td><td>9월 평년값 (1991-2020) (c)</td></tr>"
+            "<tr><td>평균기온(℃)</td><td>20.6</td><td>19.6</td></tr><tr><td>강수량(mm)</td><td>11.2</td><td>140.2</td></tr></table>")
+    assert header_rows(parse_rows(long)) == 1
+    two = ('<table><tr><td colspan="3">지점</td><td colspan="2">1위</td></tr>'
+           "<tr><td>번호</td><td>지점명</td><td>관측개시</td><td>연도</td><td>값</td></tr>"
+           "<tr><td>131</td><td>청주</td><td>1967.01.01</td><td>2024</td><td>26.4</td></tr></table>")
+    assert header_rows(parse_rows(two)) == 2
+    cells = ('<table><tr><td rowspan="2">담당 부서</td><td rowspan="2">기후서비스과</td><td>책임자</td><td>과장</td>'
+             "<td>홍길동</td><td>(043-123-4567)</td></tr>"
+             "<tr><td>담당자</td><td>주무관</td><td>김철수</td><td>(043-123-4568)</td></tr></table>")
+    joined = ('<table><tr><td rowspan="2">담당 부서</td><td rowspan="2">기후서비스과</td><td>책임자</td>'
+              "<td>과장 홍길동 (043-123-4567)</td></tr><tr><td>담당자</td><td>주무관 김철수 (043-123-4568)</td></tr></table>")
+    assert header_rows(parse_rows(cells)) == header_rows(parse_rows(joined)) == 0
+
+
+def test_figure_parts_join_figure():
+    # 그래프 그림 맨 위 줄(글자층 없음)을 검출기가 그림 밖 그림 제목으로, 패널 표지 '(a)' 를 그림 바로 위 줄로 잡았다(실측
+    # test3.pdf). '【그림 n】' 제목과 그림 틀이 덮은 글자층 본문 줄은 그대로
+    doc = _doc(("figure_title", (120, 456, 512, 471), "상순(8.5mm, 17.5%) 중순(0.0mm, 0.0%) 하순(2.7mm, 7.2%)"),
+               ("chart", (78, 473, 518, 651), None),
+               ("figure_title", (162, 659, 428, 675), "【그림 2】 2026년 9월 일별 충북 강수량 시계열"),
+               ("figure_title", (72, 276, 86, 289), "(a)"), ("image", (64, 291, 296, 457), None),
+               ("text", (90, 600, 300, 640), "그림 틀 아래로 이어지는 본문 문단"))
+    doc.pages[0].blocks[0].provenance = [{"rule": "no_layer_chars"}]          # 글자층 있는 쪽인데 그 자리에 글자가 없다
+    b = tables(doc).pages[0].blocks
+    assert (b[0].merged_into, b[3].merged_into) == ("p1.b02", "p1.b05")
+    assert b[1].figure_text.startswith("상순") and b[1].caption_id == "p1.b03" and b[4].figure_text == "(a)"
+    assert b[5].keep and b[5].merged_into is None
+
+
+def test_figure_title_with_layer_chars_stays_caption():
+    # 모델이 글자층과 똑같이 읽은 그림 제목(표시 없음)·잘린 글 블록은 그림 글로 옮기지 않는다(검토 지적)
+    doc = _doc(("chart", (78, 300, 518, 450), None), ("figure_title", (180, 453, 420, 466), "연도별 9월 강수량 추이"),
+               ("text", (120, 320, 400, 340), "아 아 아 아 아 아 아 아"))
+    doc.pages[0].blocks[2].provenance, doc.pages[0].blocks[2].truncated = [{"rule": "no_layer_chars"}], "length"
+    b = tables(doc).pages[0].blocks
+    assert b[0].caption_id == "p1.b02" and b[0].figure_text is None
+    assert b[1].merged_into is None and b[2].merged_into is None and b[2].keep
+
+
+def test_numbered_figure_caption_a_bit_far():
+    # 지도 두 장과 '【그림 1】' 사이 16pt — 꼴이 분명한 그림 제목은 30pt 까지 잇는다(실측 test3.pdf). 라벨뿐인 줄은 15pt 그대로
+    doc = tables(_doc(("chart", (62, 142, 288, 402), None), ("chart", (298, 142, 526, 402), None),
+                      ("figure_title", (117, 418, 472, 434), "【그림 1】 2026년 9월 충북 평균기온 분포도"),
+                      ("image", (100, 500, 500, 600), None), ("figure_title", (150, 620, 450, 632), "강수량 분포")))
+    b = doc.pages[0].blocks
+    assert b[0].caption_id == b[1].caption_id == "p1.b03" and b[3].caption_id is None
+
+
+def test_header_rows_with_blank_corner_and_repeated_sublabels():
+    # 대각선 머리칸 글을 모델이 둘째 행에 두어 첫 행 첫 칸이 비고, 둘째 행은 묶음마다 '21·22' 가 되풀이된다(실측 test2.pdf GPU)
+    rep = ('<table><tr><td></td><td colspan="3">평균기온(℃)</td><td colspan="3">일강수량(mm)</td></tr>'
+           "<tr><td>구분 주차</td><td>21</td><td>22</td><td>23</td><td>21</td><td>22</td><td>23</td></tr>"
+           "<tr><td>평년</td><td>18.4</td><td>19.4</td><td>20.2</td><td>2.9</td><td>0.6</td><td>2.6</td></tr></table>")
+    assert header_rows(parse_rows(rep)) == 2
+    zeros = ('<table><tr><td>구분</td><td colspan="2">상반기</td><td colspan="2">하반기</td></tr>'
+             "<tr><td>사업 수</td><td>0</td><td>0</td><td>0</td><td>0</td></tr>"
+             "<tr><td>예산</td><td>10</td><td>20</td><td>30</td><td>40</td></tr></table>")
+    assert header_rows(parse_rows(zeros)) == 1                         # 값이 같은 자료 행은 칸 이름 행이 아니다
+
+
+def test_invented_figure_text_dropped():
+    # 글 없는 만화 그림에서 그림 속 글자 읽기가 지어낸 글(실측 test2.pdf 8쪽) — 길이 한도로 잘렸거나 한글·영문·숫자가 없으면 버린다
+    doc = _doc(("image", (309, 548, 352, 594), None), ("image", (239, 597, 284, 643), None), ("image", (266, 591, 330, 626), None))
+    a, b, c = doc.pages[0].blocks
+    a.figure_text, a.truncated = "ふ～～～", "length"
+    b.figure_text, c.figure_text = "うっ", "OPEN 공공누리 2026"
+    a, b, c = tables(doc).pages[0].blocks
+    assert (a.figure_text, b.figure_text, c.figure_text) == (None, None, "OPEN 공공누리 2026")
+    assert (a.truncated, a.provenance) == (None, [{"rule": "figure_text_noise", "before": "ふ～～～", "truncated": "length"}])
+
+
+def test_header_rows_time_quarter_and_data_rows():
+    # 시각·분기 머리글은 머리행, 병합 머리글 아래 행 이름이 있는 글 자료행·우연히 같은 값 자료행은 둘째 머리행이 아니다(검토 지적)
+    time = "<table><tr><td>구분</td><td>09:00</td><td>12:00</td></tr><tr><td>기온</td><td>20.1</td><td>24.3</td></tr></table>"
+    quarter = "<table><tr><td>구분</td><td>1/4</td><td>2/4</td></tr><tr><td>매출</td><td>10</td><td>20</td></tr></table>"
+    text = ('<table><tr><td>구분</td><td colspan="2">주요 내용</td></tr><tr><td>목표</td><td>디지털 전환</td><td>데이터 개방</td></tr>'
+            "<tr><td>예산</td><td>10</td><td>20</td></tr></table>")
+    same = ('<table><tr><td>구분</td><td colspan="2">상반기</td><td colspan="2">하반기</td></tr>'
+            "<tr><td>사업 수</td><td>1</td><td>0</td><td>1</td><td>0</td></tr><tr><td>예산</td><td>10</td><td>20</td><td>30</td><td>40</td></tr></table>")
+    assert [header_rows(parse_rows(h)) for h in (time, quarter, text, same)] == [1, 1, 1, 1]
+
+
+def test_figure_text_kept_unless_only_kana_or_symbols():
+    # 잘린 그림 글이라도 글자가 있으면 둔다(QC 가 잘림으로 센다), 한자·전각 숫자·그리스 문자도 글 — 가나·기호뿐인 글만 버린다(검토 지적)
+    doc = _doc(*[("image", (60, 60 + 60 * i, 200, 110 + 60 * i), None) for i in range(5)])
+    texts = ["2026 국민 안전 수칙", "國立氣象科學院", "１２３", "α β γ", "ぐっぴっっっっ"]
+    for b, t in zip(doc.pages[0].blocks, texts):
+        b.figure_text = t
+    doc.pages[0].blocks[0].truncated = "length"
+    out = tables(doc).pages[0].blocks
+    assert [b.figure_text for b in out] == texts[:4] + [None]
+    assert out[0].truncated == "length"
+
+
+def test_header_rows_title_row_and_repeated_values():
+    # 표 전체를 덮는 제목 칸 아래 항목-값 개요표, 묶음마다 우연히 같은 범주 값('적합·해당 없음')이 든 첫 자료 행은 머리행이
+    # 아니다. '요소 | 평균기온(2칸) …' 아래 '순위 | 연도 | 값 …' 은 머리행(실측 test3.pdf 9쪽)(검토 지적)
+    kv = ('<table><tr><td colspan="2">사업 개요</td></tr><tr><td>사업명</td><td>지능형 민원 상담 시스템 구축</td></tr>'
+          "<tr><td>사업기간</td><td>2026. 3. ~ 2026. 12.</td></tr><tr><td>사업비</td><td>1,200</td></tr></table>")
+    cat = ('<table><tr><td>기관명</td><td colspan="2">1차 점검</td><td colspan="2">2차 점검</td></tr>'
+           "<tr><td>가기관</td><td>적합</td><td>해당 없음</td><td>적합</td><td>해당 없음</td></tr>"
+           "<tr><td>나기관</td><td>부적합</td><td>적합</td><td>적합</td><td>적합</td></tr></table>")
+    rank = ('<table><tr><td>요소</td><td colspan="2">평균기온(℃)</td><td colspan="2">강수량(mm)</td></tr>'
+            "<tr><td>순위</td><td>연도</td><td>값</td><td>연도</td><td>값</td></tr>"
+            "<tr><td>1</td><td>2024</td><td>24.2</td><td>2007</td><td>358.9</td></tr>"
+            "<tr><td>2</td><td>2025</td><td>22.2</td><td>1990</td><td>300.4</td></tr>"
+            "<tr><td>3</td><td>1998</td><td>21.9</td><td>1985</td><td>284.0</td></tr></table>")
+    assert [header_rows(parse_rows(h)) for h in (kv, cat, rank)] == [1, 1, 2]
+
+
+def test_caption_above_convention_keeps_near_title():
+    # 제목을 그림 위에 다는 문서에서 그림 아래 쪽 끝에 다음 그림 제목만 남았다(그림은 다음 쪽) — 15pt 밖 '<그림 n>' 은 15pt 안
+    # 후보가 있으면 쓰지 않는다. 괄호 제목 문서도 같다(검토 지적)
+    for own in ("[그림 1] 연도별 출생아 수 추이", "[ 연도별 출생아 수 추이 ]"):
+        doc = _doc(("figure_title", (100, 100, 495, 114), own), ("image", (100, 119, 495, 400), None),
+                   ("text", (100, 403, 300, 413), "자료: 통계청"), ("figure_title", (100, 422, 495, 436), "<그림 2> 시도별 출생아 수"))
+        assert tables(doc).pages[0].blocks[1].caption_id == "p1.b01"
+
+
+def test_stacked_panel_labels_go_to_nearest_figure():
+    # 표지를 그림 위에 단 그림 두 장을 위아래로 붙였다 — '(나)' 는 위 그림 5pt 아래·아래 그림 2pt 위라 아래 그림의 것이다.
+    # 거리가 같으면 어느 그림 것인지 몰라 그대로 둔다(검토 지적)
+    def doc(g):
+        return _doc(("figure_title", (72, 100, 87, 113), "(가)"), ("image", (64, 115, 296, 280), None),
+                    ("figure_title", (72, 280 + g, 87, 293 + g), "(나)"), ("image", (64, 295 + g, 296, 460 + g), None))
+    b = tables(doc(5)).pages[0].blocks
+    assert (b[0].merged_into, b[2].merged_into, b[1].figure_text, b[3].figure_text) == ("p1.b02", "p1.b04", "(가)", "(나)")
+    b = tables(doc(2)).pages[0].blocks
+    assert (b[2].keep, b[2].merged_into, b[1].figure_text) == (True, None, "(가)")
+
+
+def test_drawn_title_alone_is_caption():
+    # 글자층 글자가 없는 그림 바로 아래 제목 줄(다른 보고서 그래프를 제목째 캡처)은 그 그림에 번호·괄호 제목이 따로 없으면
+    # 그림 글이 아니라 그림 제목이다(검토 지적)
+    doc = _doc(("chart", (78, 100, 518, 300), None), ("figure_title", (150, 303, 450, 317), "연도별 출생아 수 추이"))
+    doc.pages[0].blocks[1].provenance = [{"rule": "no_layer_chars"}]
+    b = tables(doc).pages[0].blocks
+    assert (b[1].merged_into, b[0].caption_id) == (None, "p1.b02")
+
+
+def test_absorbed_lines_are_not_captions():
+    # 그림 글로 묶인 줄을 다른 그림이 제목으로 잇지 않는다(출력에 없는 블록을 가리킴). 묶인 줄이 그림과 축 이름 사이에 있었으면
+    # 축 이름도 제목으로 잇지 않는다(검토 지적)
+    doc = _doc(("image", (64, 100, 200, 200), None), ("figure_title", (80, 203, 400, 215), "일강수량(mm) 누적강수량(mm)"),
+               ("chart", (64, 218, 520, 400), None), ("figure_title", (150, 405, 450, 419), "【그림 1】 9월 일별 강수량"))
+    doc.pages[0].blocks[1].provenance = [{"rule": "no_layer_chars"}]
+    b = tables(doc).pages[0].blocks
+    assert (b[1].merged_into, b[0].caption_id, b[2].caption_id) == ("p1.b03", None, "p1.b04")
+    doc = _doc(("image", (64, 100, 520, 300), None), ("text", (300, 110, 500, 124), "2025년 2026년 평년"),
+               ("figure_title", (280, 308, 320, 320), "주차"))
+    doc.pages[0].blocks[1].provenance = [{"rule": "no_layer_chars"}]
+    b = tables(doc).pages[0].blocks
+    assert (b[1].merged_into, b[0].caption_id) == ("p1.b01", None)

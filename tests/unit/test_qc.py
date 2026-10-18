@@ -39,3 +39,17 @@ def test_blank_page_with_ink_but_only_page_number_is_counted():
     assert run_checks(doc, [_raw(1, 0.0375), _raw(2, 0.0)], QCCfg()).qc.status == "ok"   # 쪽번호만 있는 진짜 빈 쪽
     doc.pages[1].blocks.append(Block(id="p2.b02", type="text", bbox=(150, 400, 450, 420), text="이 페이지는 의도적으로 비워 두었습니다."))
     assert run_checks(doc, [_raw(1, 0.0375), _raw(2, 0.07)], QCCfg()).qc.empty_pages == 0   # 잉크는 '비워 둠' 문구의 것
+
+
+def test_truncated_blocks_counted_even_when_merged_or_emptied():
+    """잘린 블록은 글을 대표 블록에 넘겼거나(병합) 글이 비었어도 센다 — 잘린 글이 대표 출력에 남거나 본문이 통째로 빠졌다(검토 지적).
+    그림 속 지어낸 글을 버린 그림은 tables 가 잘림 표시를 지운다."""
+    page = Page(page_no=1, sheet_no=1, size=(595, 842), blocks=[
+        Block(id="p1.b01", type="text", bbox=(50, 50, 500, 100), text="본문 " * 40),
+        Block(id="p1.b02", type="text", bbox=(50, 120, 500, 300), text=None, truncated="repetition",
+              keep=False, drop_reason="merged", merged_into="p1.b01"),
+        Block(id="p1.b03", type="text", bbox=(50, 320, 500, 400), text="", truncated="length")])
+    doc = Document(doc_id="sha256:ab", source=Source(paths=["a.pdf"], pages=1),
+                   parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"), pages=[page])
+    qc = run_checks(doc, [_raw(1, 0.05)], QCCfg()).qc
+    assert (qc.status, qc.truncated_blocks) == ("review", 2)

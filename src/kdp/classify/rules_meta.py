@@ -61,6 +61,8 @@ END = re.compile(r"(?:^|\s)끝\s*\.\s*$", re.M)                  # 공문 본문
 _PRESS = re.compile(r"\s*(?:(?P<press>보\s*도(?:\s*(?:시\s*점|일\s*시|일\s*자|일))?|엠\s*바\s*고)"
                     r"|배\s*포(?:\s*(?:일\s*시|일\s*자|일))?)(?![가-힣])\s*[:：]?\s*")
 _DATED = re.compile(r"\s*[(\[]?\s*(?:19|20)\d{2}\s*[.년/\-]")      # 날짜로 시작하는 글 — 꼬리표 바로 뒤·옆 칸
+_PRESS_NEXT = re.compile(r"(?<!\S)(?:(?P<press>보\s*도(?:\s*(?:시\s*점|일\s*시|일\s*자|일))?|엠\s*바\s*고)"
+                         r"|배\s*포(?:\s*(?:일\s*시|일\s*자|일))?)(?![가-힣])\s*[:：]?\s*")   # 한 블록 안 다음 꼬리표('… 14:00 배포 …')
 _PRESS_HEAD = re.compile(r"(?:보\s*도\s*(?:참\s*고\s*|설\s*명\s*|해\s*명\s*)?|설\s*명\s*|해\s*명\s*)자\s*료")   # 보도자료 머리 — '배포' 날짜를 받는 단서
 # 문장 줄 — 항목 이름이 있어도 메타 줄이 아니다. '개요·필요' 로 끝나는 제목은 문장이 아니다
 _SENT = re.compile(r"(?:다|[어아여해워와봐줘져세네게데래대나까에]요)\s*[.。!?]?\s*$")
@@ -329,20 +331,31 @@ def _press_dates(page: Page) -> None:
     """보도자료 머리의 보도·배포 일시 → doc_meta(date)(실측 test2.pdf — '보도시점' 꼬리표는 머리말로 버려지고 옆 날짜 칸만
     글로 남았다). 첫 논리 페이지의 보도자료 머리 띠(문서 제목 위 — 제목 아래 '배포 일시: …' 안내 줄·기사 날짜는 본문)에서
     꼬리표 블록(버린 것도) 같은 줄 바로 오른쪽 칸이 날짜로 시작하는 짧은 글 블록이거나,
-    꼬리표 뒤에 날짜가 바로 오는 글 블록만. '배포' 날짜는 보도자료 단서(보도 꼬리표·'보도자료' 머리)가 있을 때만 — 안내문의
-    '배포 일시' 는 본문이다. 날짜 값은 보도 날짜를 앞세워 한 블록에만 단다."""
+    꼬리표 뒤에 날짜가 바로 오는 블록만(꼬리표와 함께 든 머리말은 버린 블록이어도 — 보도·배포 두 칸을 한 블록으로 잡았으면
+    꼬리표마다 다음 꼬리표 앞까지 따로 본다). '배포' 날짜는 보도자료 단서(보도 꼬리표·'보도자료' 머리)가 있을 때만 — 안내문의
+    '배포 일시' 는 본문이다. 날짜 값은 보도 날짜를 앞세워 한 블록에만 단다. 꼬리표·날짜 말고 다른 글(담당 부서 등)도 든 글
+    블록은 지우지 않고 값만 단다(meta_values)."""
     h = page_size(page)[1]
     titles = [local(page, b.bbox)[1] for b in page.blocks if b.merged_into is None and b.type == "doc_title"]
     top = [b for b in page.blocks if b.merged_into is None and (b.text or "").strip()   # 보도 머리 띠 — 문서 제목 위(없으면 위쪽)
            and (local(page, b.bbox)[3] <= min(titles) + GAP if titles else local(page, b.bbox)[1] < TOP_RATIO * h)]
-    labels = [(b, m) for b in top if (m := _PRESS.match(" ".join(b.text.split())))]
-    cue = any(m.group("press") for _, m in labels) or any(_PRESS_HEAD.search(b.text) for b in top)
+    labels, mixed = [], set()                           # (꼬리표 블록, 보도 꼬리표인가, 꼬리표 뒤 글 — 같은 블록 다음 꼬리표 앞까지)
+    for b in top:
+        s = " ".join(b.text.split())
+        if not (m := _PRESS.match(s)):
+            continue
+        tags = [m, *_PRESS_NEXT.finditer(s, m.end())]   # '보도시점 … 배포 …' 를 한 머리말로 잡은 블록(실측 test3.pdf)
+        segs = [s[t.end():tags[i + 1].start() if i + 1 < len(tags) else len(s)].strip() for i, t in enumerate(tags)]
+        if any(x and not (len(x) <= 30 and _DATED.match(x)) for x in segs):
+            mixed.add(b.id)
+        labels += [(b, bool(t.group("press")), x) for t, x in zip(tags, segs)]
+    cue = any(press for _, press, _ in labels) or any(_PRESS_HEAD.search(b.text) for b in top)
     found: dict[str, tuple[bool, Block, tuple]] = {}    # 블록 id → (보도 날짜가 아님, 블록, 날짜)
-    for lab, m in labels:
-        rank = m.group("press") is None
+    for lab, press, text in labels:
+        rank = not press
         if rank and not cue:
             continue
-        b, text = lab, " ".join(lab.text.split())[m.end():]   # 꼬리표와 날짜가 한 블록
+        b = lab                                         # 꼬리표와 날짜가 한 블록
         if not text:
             x0, y0, x1, y1 = local(page, lab.bbox)
             right = []
@@ -354,10 +367,16 @@ def _press_dates(page: Page) -> None:
                 continue
             b = min(right, key=lambda r: r[0])[1]           # 같은 줄 바로 오른쪽 칸만 — 다른 꼬리표의 날짜를 건너 잡지 않는다
             text = " ".join(b.text.split())
-        if b.keep and b.type == "text" and len(text) <= 30 and _DATED.match(text) and (d := find_date(text)) \
+        own = b is lab and b.type == "header"           # 꼬리표와 날짜가 함께 든 머리말은 버린 블록이어도 날짜를 읽는다
+        if (b.keep and b.type == "text" or own) and len(text) <= 30 and _DATED.match(text) and (d := find_date(text)) \
                 and (b.id not in found or rank < found[b.id][0]):
             found[b.id] = (rank, b, d)
     for i, (_, b, d) in enumerate(sorted(found.values(), key=lambda f: f[0])):
+        if b.keep and b.id in mixed:
+            if i == 0:
+                b.provenance = (b.provenance or []) + [{"rule": "meta_values"}]
+                b.meta = {"date": _iso(d)}
+            continue
         _retype(b, "doc_meta", "meta")
         b.meta = {"date": _iso(d)} if i == 0 else None
 

@@ -30,6 +30,7 @@ LAYER_IN_VLM = 0.8             # 블록: 레이어 글자 중 모델 글에도 �
 MIX_GAP = 6.0                  # 한 줄 안 빈틈이 글자 높이의 이 배수보다 넓으면 서로 다른 영역이 섞인 블록으로 의심
 CELL_MIN_CHARS = 4
 CELL_MAX_ERR = 0.2             # 표 칸: 모델 글자 수의 20% 까지 다르면 같은 칸으로 본다
+QUOTES = set("'\"‘’‚‛“”„‟`´′″°ʼ")   # 표 칸을 맞춰 볼 때 빼는 따옴표 — 모델이 칸의 따옴표('23)를 빠뜨리거나(실측 test2.pdf GPU) ° 로 읽는다(CPU)
 LAYER_SKIP_COST = 0.03        # 표 맞춤: 칸 사이에서 건너뛴 레이어 글자 하나의 비용(모델이 행을 빠뜨린 경우)
 UNMATCHED_COST = 0.5          # 표 맞춤: 못 맞춘 칸의 글자 하나당 비용
 LENGTH_TIE = 0.01             # 표 맞춤: 거리가 같으면 칸 길이에 가까운 맞춤
@@ -203,10 +204,10 @@ def _dist_row(p: str, t: str, free_start: bool = True) -> np.ndarray:
     return prev
 
 
-def _cands(p: str, flat: str) -> list[tuple[int, int, float]]:
-    """p 가 맞을 수 있는 레이어 자리 (시작, 끝, 비용) — 거리 한도 안의 모든 끝·길이.
-    비용에 길이 차이를 조금 더해, 거리가 같으면 칸 길이에 가까운 맞춤이 이긴다."""
-    limit = int(len(p) * CELL_MAX_ERR)
+def _cands(p: str, flat: str, size: int | None = None) -> list[tuple[int, int, float]]:
+    """p 가 맞을 수 있는 레이어 자리 (시작, 끝, 비용) — 거리 한도 안의 모든 끝·길이. 한도는 size(따옴표를 뺀 칸이면 뺀
+    따옴표까지 센 원래 칸 길이) 기준. 비용에 길이 차이를 조금 더해, 거리가 같으면 칸 길이에 가까운 맞춤이 이긴다."""
+    limit = int((size or len(p)) * CELL_MAX_ERR)
     row = _dist_row(p, flat)
     out = []
     for e in (int(x) for x in np.nonzero(row <= limit)[0]):
@@ -218,16 +219,16 @@ def _cands(p: str, flat: str) -> list[tuple[int, int, float]]:
     return out
 
 
-def _align(keys: list[str | None], flat: str) -> list[tuple[int, int] | None]:
+def _align(keys: list[str | None], flat: str, sizes: list[int] | None = None) -> list[tuple[int, int] | None]:
     """칸들을 순서대로 레이어 자리에 한 번에 맞춘다 — 거리 합 + 칸 사이에서 건너뛴 레이어 글자 + 못 맞춘 칸이 가장 작은 배치.
     모델이 행을 빠뜨린 표, 비슷한 값이 이어지는 표, 칸 끝에 글자를 하나 더 읽은 경우를 함께 가른다."""
     states: dict[int, float] = {0: 0.0}                       # 마지막으로 맞춘 끝 → 비용
     steps = []
-    for k in keys:
+    for i, k in enumerate(keys):
         if k is None:
             steps.append(None)
             continue
-        cands = _cands(k, flat)
+        cands = _cands(k, flat, sizes[i] if sizes else None)
         new: dict[int, tuple[float, int, tuple[int, int] | None]] = {}
         for last, cost in states.items():
             c = cost + UNMATCHED_COST * len(k)
@@ -252,11 +253,11 @@ def _align(keys: list[str | None], flat: str) -> list[tuple[int, int] | None]:
 
 
 def _flat(text: str) -> tuple[str, list[int]]:
-    """공백을 뺀 비교용 글자열과, 그 글자마다 text 의 위치 — 글자마다 NFKC 하되 늘어난 글자(㎡→m2)도 같은 위치를 가리킨다."""
+    """공백·따옴표를 뺀 비교용 글자열과, 그 글자마다 text 의 위치 — 글자마다 NFKC 하되 늘어난 글자(㎡→m2)도 같은 위치를 가리킨다."""
     chars, where = [], []
     for i, c in enumerate(text):
         if not c.isspace():
-            n = unicodedata.normalize("NFKC", c)
+            n = "".join(ch for ch in unicodedata.normalize("NFKC", c) if ch not in QUOTES)   # '℃' → '°C' 의 ° 도 뺀다
             chars.append(n)
             where.extend([i] * len(n))
     return "".join(chars), where
@@ -268,11 +269,13 @@ def _fix_table(html: str, chars) -> tuple[str, int]:
     text = unicodedata.normalize("NFC", _join(chars, newline=False, keep_unknown=True)[0])   # 풀린 자모도 합친다
     flat, where = _flat(text)
     cells = list(_CELL.finditer(html))
-    keys = []
+    keys, sizes = [], []
     for m in cells:
-        key = unicodedata.normalize("NFKC", "".join(htmllib.unescape(m.group(2).replace("\\n", " ")).split()))
-        keys.append(key if "<" not in m.group(2) and len(key) >= CELL_MIN_CHARS else None)
-    picks = _align(keys, flat) if flat else [None] * len(keys)
+        full = unicodedata.normalize("NFKC", "".join(htmllib.unescape(m.group(2).replace("\\n", " ")).split()))
+        key = "".join(ch for ch in full if ch not in QUOTES)       # 글자 수 하한·허용 오차는 따옴표까지 센 칸 길이로
+        keys.append(key if "<" not in m.group(2) and key and len(full) >= CELL_MIN_CHARS else None)
+        sizes.append(len(full))
+    picks = _align(keys, flat, sizes) if flat else [None] * len(keys)
     usable = sum(k is not None for k in keys)
     if not usable or sum(p is not None for p in picks) < 0.5 * usable:
         return html, 0
@@ -281,7 +284,13 @@ def _fix_table(html: str, chars) -> tuple[str, int]:
         if pick is None:
             continue
         s, e = pick
-        piece = " ".join(text[where[s]:where[e - 1] + 1].split())
+        cell = htmllib.unescape(m.group(2)).strip()
+        a, z = where[s], where[e - 1] + 1                           # 따옴표를 빼고 맞췄다 — 칸 앞뒤에 붙은 레이어 따옴표는 되살린다
+        while a > 0 and text[a - 1] in QUOTES and (cell[:1] in QUOTES or a < 2 or text[a - 2].isspace()):
+            a -= 1
+        while z < len(text) and text[z] in QUOTES and (cell[-1:] in QUOTES or z + 1 >= len(text) or text[z + 1].isspace()):
+            z += 1
+        piece = " ".join(text[a:z].split())
         if any(_PUA.match(c) and c not in PUA_MAP for c in piece):
             continue                                                # 뜻 모를 기호가 든 칸은 모델 글을 둔다
         new = htmllib.escape(piece, quote=False)
@@ -322,6 +331,11 @@ def apply_text_layer(doc: Document, layers: dict[int, list[dict]], info: PdfInfo
         skipped = [b for b in blocks if _skipped(b)]
         targets = [b for b in blocks if b.type in TEXT_LABELS or (b.type == "table" and b.html)]
         owned = _assign(targets, chars)
+        if page.born_digital:                                       # 글자층 있는 쪽인데 자리에 글자가 없는 글 블록 — 그림에 그려진 글
+            bare = [b for b in targets if b.type in TEXT_LABELS and not any(not chars[i][2] for i in owned[b.id])]
+            if 2 * len(bare) <= sum(b.type in TEXT_LABELS for b in targets):  # 글 블록 절반 이상이 글자층인 쪽만 — 스캔 쪽에 머리말만 글자인 쪽은 아니다
+                for b in bare:
+                    b.provenance = (b.provenance or []) + [{"rule": "no_layer_chars"}]
         if skipped:                                                 # 훅 C: 일치율은 VLM 이 읽은 글 블록(검증 표본)으로만 — 표는 뺀다
             read = [b for b in targets if b.type in TEXT_LABELS and not _skipped(b)]
             layer = "".join(chars[i][0] for b in read for i in owned[b.id] if not chars[i][2])

@@ -68,7 +68,7 @@ class PaddleVL(_Cfg):
     paddlex_config: str = "paddlex_vl16.yaml"
     max_new_tokens: int = 4096
     use_ocr_for_image_block: bool = True
-    use_chart_recognition: bool = True
+    use_chart_recognition: bool = False   # D14 — 그래프 표 읽기는 지어낸 값을 냈다(테스트_결과 6.5)
     use_seal_recognition: bool = False
     page_batch: int = 32
     vlm_skip: list[Literal["logo", "text_layer"]] = Field(default_factory=lambda: ["logo", "text_layer"])   # 훅 C

@@ -5,8 +5,8 @@ paddle_vl:
   pipeline_version: v1.6
   paddlex_config: paddlex_vl16.yaml  # 이 파일 기준 상대 경로
   max_new_tokens: 4096
-  use_ocr_for_image_block: true      # D14
-  use_chart_recognition: true        # D14
+  use_ocr_for_image_block: true      # D14 — 그림(image) 속 글자는 읽는다. 그래프(chart) 블록은 읽지 않는다
+  use_chart_recognition: false       # D14 — 그래프를 표로 읽기는 끈다: test2·test3 에서 지어낸 값·외국어 머리글(테스트_결과 6.5). 그래프·지도는 그림 파일로만 넘긴다
   use_seal_recognition: false
   page_batch: 32                     # predict_iter 한 번에 넣는 쪽 수
   vlm_skip: [logo, text_layer]       # 훅 C — 로고·PDF 글자가 덮는 글 블록은 VLM 생략(text_layer 는 prefer 일 때만, 쪽마다 검증 표본 3개)

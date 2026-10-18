@@ -1,9 +1,13 @@
 """항목 계층(기획서 4.3 규칙 5) — 공문 8단계(1. → 가. → 1) → 가) → (1) → (가) → ① → ㉮)와 보고서체(□ → ○ → - → ·).
 
 VLM 이 읽은 글머리 기호는 믿을 수 없다(○ 가 ☐ 로, PPT 기호는 사라짐 — 실측). 그래서 섹션(가장 가까운 제목) 안에서 번호·기호로
-시작하는 항목의 들여쓰기 x(논리 쪽 너비 대비, 쪽마다 가로 밀림을 맞춘 뒤)를 묶어 왼쪽부터 1, 2, … 로 매기고 기호 모양은 수준에
-쓰지 않는다. 번호는 보조로만 —
-들여쓰지 않아 한 x 에 번호 체계가 섞이면(1. 과 가.) 번호 차례로 나눈다. 기호 없는 블록은 섹션 왼쪽 끝이면 문단, 번호·기호 있는
+시작하는 항목의 들여쓰기 x(논리 쪽 너비 대비, 쪽마다 가로 밀림을 맞춘 뒤)를 묶어 왼쪽부터 1, 2, … 로 매기고, VLM 이 읽은 기호
+모양은 수준에 쓰지 않는다. 번호는 보조로만 —
+들여쓰지 않아 한 x 에 번호 체계가 섞이면(1. 과 가.) 번호 차례로 나눈다. 글자층에서 온 글의 보고서체 기호(□ ○ - ·)는 믿을 수
+있어 번호처럼 차례로 나눈다(실측 test3.pdf — 검출기 상자 왼쪽 끝이 들쭉날쭉해 □ 와 들여쓴 ○ 가 한 x 묶음이 됐다). 모델이 읽은
+기호(검증 표본)는 같은 묶음에서 글자층으로 확인된 기호일 때만 쓴다. 번호가 있는 묶음의 기호는 나누지 않고(번호와 한 스택에
+섞지 않는다), 같은 기호가 상자 흔들림만큼 밀려 갈린 옆 묶음은 합치며, 얕은 항목 아래 더 깊은 묶음은 갈래마다 새로 쌓는다.
+기호 없는 블록은 섹션 왼쪽 끝이면 문단, 번호·기호 있는
 항목과 같은 x 면 기호를 잃은 항목으로 그 수준을 받고, 그 밖(첫 줄 들여쓰기 문단·항목의 이어진 글)은 비운다. 기호는 원문대로 둔다.
 """
 from __future__ import annotations
@@ -13,7 +17,7 @@ from itertools import groupby
 
 from ..geometry import local, page_size
 from ..schema import Block, Document, Page
-from .headings import TITLE_TYPES, _ordinal, doc_title_key, marker, numbering, place
+from .headings import _ORDER, TITLE_TYPES, _ordinal, doc_title_key, marker, numbering, place
 
 INDENT_TOL = 0.008        # 같은 수준으로 보는 x 차이(논리 쪽 너비 대비, A4 에서 약 5pt) — 블록 상자 흔들림
 MAX_INDENT = 0.3          # 섹션 왼쪽 끝에서 이보다 오른쪽(가운데 맞춤 글·오른쪽 날짜·다른 단)은 항목으로 보지 않는다
@@ -81,6 +85,24 @@ def _kind(n: tuple[str, str] | None) -> str | None:
     return None if n is None else "①" if n[0] == "❶" else n[0]
 
 
+def _symbol(b: Block) -> str | None:
+    """글자층에서 온 글의 보고서체 기호(□ ○ - ·) — 모델이 읽은 기호는 믿을 수 없지만 글자층 기호는 원문 그대로다."""
+    if not any(p.get("rule") == "text_layer" for p in b.provenance or []):
+        return None
+    m = marker(b.text)
+    return m[0] if m and m[0] in _ORDER else None
+
+
+def _place(kinds: list, kind: str) -> int:
+    """place() 에 보고서체 기호 차례를 더한다 — 처음 나온 기호가 스택에 쌓인 아래 차례 기호보다 위면 그 자리로 올린다(제목
+    상자 요약 '-' 줄 뒤에 처음 나온 □ 문장이 '-' 밑으로 들어가지 않게)."""
+    if kind not in kinds and kind in _ORDER:
+        for i, k in enumerate(kinds):
+            if k in _ORDER and _ORDER.index(k) > _ORDER.index(kind):
+                return i
+    return place(kinds, kind)
+
+
 def _rows(items: list[tuple[Page, Block]]) -> list[tuple[Block, float, tuple | None]]:
     """(블록, 쪽 가로 밀림을 뺀 x, 줄 머리 번호·기호)."""
     rows = [(page.page_no, b, local(page, b.bbox)[0] / page_size(page)[0], marker(b.text)) for page, b in items]
@@ -100,19 +122,36 @@ def _levels(rows: list[tuple[Block, float, tuple | None]], skip=frozenset()) -> 
             spans.append([x, x])
         else:
             spans[-1][1] = x
+    def span(x):
+        return next((i for i, (lo, hi) in enumerate(spans) if lo - INDENT_TOL <= x <= hi + INDENT_TOL), None)
+
+    sure = [set() for _ in spans]                         # 묶음마다 글자층으로 확인된 보고서체 기호 — 모델이 읽은 기호는 이것만 쓴다
+    for b, x, _ in rows:
+        if b.id not in skip and (g := span(x)) is not None and (s := _symbol(b)):
+            sure[g].add(s)
+    for g in range(len(spans) - 1, 0, -1):                # 같은 기호가 상자 흔들림만큼 밀려 옆 묶음이 됐으면 한 묶음으로
+        if sure[g] & sure[g - 1] and spans[g][0] - spans[g - 1][1] <= 2 * INDENT_TOL:
+            spans[g - 1][1] = spans.pop(g)[1]
+            sure[g - 1] |= sure.pop(g)
     kinds = [[] for _ in spans]                           # 묶음마다 번호 체계 스택(한 x 에 번호 체계가 섞인 문서)
     cur, depth, found = [0] * len(spans), [1] * len(spans), []
     for b, x, m in rows:
         if b.id in skip:
             continue
-        g = next((i for i, (lo, hi) in enumerate(spans) if lo - INDENT_TOL <= x <= hi + INDENT_TOL), None)
+        g = span(x)
         if g is None or x - base > MAX_INDENT or (not m and x - base <= INDENT_TOL):
             continue                                      # 묶음 밖 글, 기호 없이 왼쪽 끝인 문단
-        if m and (k := _kind(numbering(b.text))):
-            t = place(kinds[g], k)
+        if k := m and _kind(numbering(b.text)):
+            kinds[g] = [c for c in kinds[g] if c not in _ORDER]   # 번호와 기호는 한 스택에 섞지 않는다
+        elif m and all(c in _ORDER for c in kinds[g]):    # 번호가 있는 묶음의 기호는 앞 번호의 수준을 받는다
+            k = _symbol(b) or (m[0] if m[0] in sure[g] else None)
+        if k:
+            t = _place(kinds[g], k)
             del kinds[g][t:]
             kinds[g].append(k)
             cur[g], depth[g] = t, max(depth[g], t + 1)
+            for h in range(g + 1, len(spans)):            # 얕은 항목 아래 더 깊은 묶음은 새로 쌓는다(갈래마다 다른 기호)
+                kinds[h], cur[h] = [], 0
         found.append((b, g, cur[g]))                       # 기호·기호 없는 항목은 앞 번호 항목의 하위 수준을 받는다
     offset = [sum(depth[:i]) for i in range(len(spans))]
     return [(b, offset[g] + sub + 1, "marker" if depth[g] > 1 else "indent") for b, g, sub in found]
