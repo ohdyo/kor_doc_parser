@@ -56,7 +56,11 @@ def run_checks(doc: Document, raws: list[RawPage], cfg: QCCfg) -> Document:
         reasons.append("table_layer_agreement")       # 모델 표가 레이어 글자를 다 담지 못했다(행 누락 등) — 검수
     if any(p.page_class_guess for p in doc.pages):
         reasons.append("page_class_guess")         # 쪽 판정을 확신하지 못해 남겨 둔 쪽 — 검수 대상
+    undescribed = sum(1 for p in doc.pages if p.keep for b in p.blocks if b.keep
+                      and any(pv.get("rule") == "figure_desc_missing" for pv in b.provenance or []))
+    if undescribed:
+        reasons.append("figure_desc_missing")      # 설명할 그림에 설명 응답이 없다(D19) — kdp describe 로 채운다
     status = "error" if "block_errors" in reasons else ("review" if reasons else "ok")
     doc.qc = QC(status=status, reasons=reasons, block_errors=errors, truncated_blocks=truncated,
-                empty_pages=empty, drop_char_ratio=drop_ratio, text_layer_agreement=layer)
+                empty_pages=empty, drop_char_ratio=drop_ratio, text_layer_agreement=layer, undescribed_figures=undescribed)
     return doc

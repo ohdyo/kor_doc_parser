@@ -210,6 +210,10 @@ def load_kdp(doc_dir: Path) -> dict:
                 blk["caption_bbox"] = boxes[b["caption_id"]]
             if any(pv.get("rule") == "join_wrapped" for pv in b.get("provenance") or []):
                 blk["joined"] = True
+            if b["type"] in FIGURE_LABELS:                 # 그림 갈래·그림 설명(D19)
+                blk["route"], blk["desc"] = b.get("route"), b.get("figure_desc") or ""
+                blk["desc_dropped"] = sum(len(pv.get("dropped") or []) for pv in b.get("provenance") or []
+                                          if pv.get("rule") == "figure_desc")
             pages[p["page_no"]].append(blk)
     return {"seconds": read_json(doc_dir / "raw" / "engine.json").get("seconds"), "pages": pages, "meta": d.get("meta") or {}}
 
@@ -378,6 +382,8 @@ def evaluate(segs: dict, golden: dict, run: dict) -> dict:
            "headings": {"found": [found, len(heads)], "level_ok": [level_ok, found]}, "lists": {"level_ok": [list_ok, len(items)]}}
     if kinds := [f for f in figs if "kind" in f]:   # 아래 지표는 정답에 그 정보가 있을 때만 낸다
         out["figures"] = _figures(pages, kinds)
+    if any("route" in f or "facts" in f for f in kinds):
+        out["figure_desc"] = _figure_desc(pages, kinds)
     if lines := [(t["page"], s) for t in golden.get("image_text", []) for s in map(norm, t["lines"]) if len(s) >= MIN_SEG]:
         out["image_text"] = [sum(present(s, body.get(p) or "") for p, s in lines), len(lines)]
     if entries := golden.get("figure_text"):
@@ -411,6 +417,42 @@ def _figures(pages: dict, figs: list[dict]) -> dict:
     leak = sum(len(norm(b["text"])) for g in figs if g["kind"] in ("chart", "photo", "map") for b in pages.get(g["page"], [])
                if b["body"] and b["bbox"] and b["kind"] == "text" and _inter(g["bbox"], b["bbox"]) >= 0.5 * _area(b["bbox"]))
     return {"found": [found, len(figs)], "caption_ok": [cap, sum(g.get("caption") is not None for g in figs)], "leak_chars": leak}
+
+
+def _has(word, sent: str) -> bool:
+    """낱말이 (정규화한) 문장에 있나 — 숫자로 시작·끝나는 낱말은 앞뒤가 숫자가 아닐 때만('1일' 은 '21일' 에, '0' 은 '2026' 에
+    없다). YAML 은 0.5·2025 를 수로 읽으므로 글로 바꿔 본다."""
+    w = norm(str(word))
+    for m in re.finditer(re.escape(w), sent):
+        if w[0].isdigit() and m.start() and sent[m.start() - 1].isdigit():
+            continue
+        if w[-1].isdigit() and m.end() < len(sent) and sent[m.end()].isdigit():
+            continue
+        return True
+    return False
+
+
+def _figure_desc(pages: dict, figs: list[dict]) -> dict:
+    """그림 갈래·그림 설명(D19) — 정답 그림 자리의 그림 블록이 모두 정답 갈래인가, 설명할 그림(사실을 적은 그림)에 설명이 있나,
+    정답 사실이 설명의 한 문장 안에 있나(사실 = 낱말 무리 목록, 무리마다 낱말 하나라도), 근거 검사로 버린 문장 수. 한 정답 그림을
+    엔진이 여럿으로 잡았으면(IoU 0.5 이상인 큰 조각과 정답 상자 안에 대부분 든 나머지 조각) 모두 그 그림이다."""
+    route = n_route = desc = n_desc = facts = n_facts = dropped = 0
+    for g in figs:
+        hits = _fig_blocks(pages, g)
+        hits += [b for b in pages.get(g["page"], []) if b["body"] and b["bbox"] and b["kind"] == "figure" and b not in hits
+                 and _inter(b["bbox"], g["bbox"]) >= 0.5 * _area(b["bbox"])]
+        if "route" in g:
+            n_route += 1
+            route += bool(hits) and all(b.get("route") == g["route"] for b in hits)
+        if "facts" in g:
+            n_desc += 1
+            text = " ".join(b.get("desc") or "" for b in hits)
+            desc += bool(text.strip())
+            sents = [norm(x) for x in re.split(r"(?<=[.!?])\s+|\n+", text) if x.strip()]
+            n_facts += len(g["facts"])
+            facts += sum(any(all(any(_has(w, x) for w in group) for group in fact) for x in sents) for fact in g["facts"])
+        dropped += sum(b.get("desc_dropped", 0) for b in hits)
+    return {"route_ok": [route, n_route], "described": [desc, n_desc], "facts": [facts, n_facts], "dropped": dropped}
 
 
 def _figure_text(pages: dict, entries: list[dict], segs: dict) -> dict:
@@ -469,6 +511,12 @@ def render(report: dict) -> str:
         rows += [("그래프·지도 속 글자 읽음", lambda r: _frac(r["figure_text"]["read"]) if "figure_text" in r else "—"),
                  ("그래프·지도 글 중 정답에 없는 줄(오독·지어냄)",
                   lambda r: _frac(r["figure_text"]["wrong_lines"]) if "figure_text" in r else "—")]
+    if has("figure_desc"):
+        rows += [("그림 갈래 맞음(글만으로 충분 / 그림과 함께)", lambda r: _frac(r["figure_desc"]["route_ok"]) if "figure_desc" in r else "—"),
+                 ("그림 설명 있음(설명할 그림)", lambda r: _frac(r["figure_desc"]["described"]) if "figure_desc" in r else "—"),
+                 ("그림 설명에 든 정답 사실", lambda r: _frac(r["figure_desc"]["facts"]) if "figure_desc" in r else "—"),
+                 ("그림 설명에서 버린 문장(근거 없는 숫자·이름)",
+                  lambda r: str(r["figure_desc"]["dropped"]) if "figure_desc" in r else "—")]
     if has("meta"):
         rows.append(("문서 정보 맞음(제목·기관·날짜)", lambda r: _frac(r["meta"]) if r.get("meta") else "—"))
     rows.append(("처리 시간(쪽당)", lambda r: f"{r['seconds']:.0f}초 ({r['seconds'] / r['n_pages']:.1f}초)"

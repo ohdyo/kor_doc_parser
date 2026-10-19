@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = "1.1"                 # 1.1: 블록 heading_level(M3)
+SCHEMA_VERSION = "1.2"                 # 1.1: 블록 heading_level(M3) · 1.2: 그림 갈래·그림 설명(D19)
 
 PageClass = Literal["normal", "cover", "toc", "blank", "divider", "form_blank", "approval"]
 BBox = tuple[float, float, float, float]
@@ -41,9 +41,11 @@ class Block(_Model):
     note_ids: list[str] | None = None
     continues_from: str | None = None
     img_path: str | None = None
-    route: Literal["html", "image"] | None = None        # 표 갈래(D18) — image 면 후속 단계가 그림으로도 다룬다
-    route_reason: str | None = None                     # photo_in_cell | failed | visual
+    route: Literal["html", "image", "text"] | None = None   # 표 갈래(D18) html|image — image 면 후속 단계가 그림으로도 다룬다.
+                                                        # 그림 갈래(D19) text|image — text 는 글자만으로 뜻이 서는 그림, image 는 그림과 함께 봐야 하는 그림
+    route_reason: str | None = None                     # 표 photo_in_cell | failed | visual · 그림 chart | labels | no_text | sentences
     figure_text: str | None = None       # 그림·차트 속 인쇄 글자(D14)
+    figure_desc: str | None = None       # 그림 설명(D19) — 그림을 봐야 아는 뜻을 범용 VLM 이 쓴 글, 근거 검사를 통과한 문장만
     meta: dict[str, str] | None = None
     truncated: Literal["length", "repetition"] | None = None
     trimmed: list[str] | None = None
@@ -95,6 +97,7 @@ class QC(_Model):
     drop_char_ratio: float | None = None
     repeat_ngram_ratio: float | None = None
     unsupported_char_ratio: float | None = None
+    undescribed_figures: int = 0         # 설명할 그림인데 설명 응답이 없는 것(D19) — kdp describe 로 채운다
 
 
 class Document(_Model):

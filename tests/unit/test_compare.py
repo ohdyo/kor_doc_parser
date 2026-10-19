@@ -206,6 +206,58 @@ def test_figure_text_read_and_wrong_lines():
     assert rows["그래프·지도 글 중 정답에 없는 줄(오독·지어냄)"] == ["2/4 (50.0%)", "—"]
 
 
+def test_figure_route_and_description():
+    """그림 갈래·설명(D19) — 갈래는 그 자리 그림 블록이 모두 맞아야, 사실은 설명의 한 문장 안에 무리마다 낱말 하나라도
+    (YAML 이 수로 읽은 0.5 도), 버린 문장은 근거 검사 기록에서 센다. 비교군은 갈래·설명이 없다."""
+    golden = {"pages": {1: "normal"}, "figures": [
+        {"page": 1, "bbox": [0, 0, 100, 100], "kind": "chart", "caption": None, "route": "image",
+         "facts": [[["남서", "서쪽"], ["높"]], [[0.5], ["넘", "초과"]], [["북동"], ["낮"]]]},
+        {"page": 1, "bbox": [200, 0, 300, 100], "kind": "photo", "caption": None, "route": "image", "facts": [[["45"]]]},
+        {"page": 1, "bbox": [400, 0, 500, 100], "kind": "poster", "caption": None}]}
+    def fig(bbox, route, desc="", dropped=0):
+        return {**cmp._blk("figure", bbox, True, "", "chart"), "route": route, "desc": desc, "desc_dropped": dropped}
+    run = {"pages": {"1": [
+        fig([2, 2, 98, 98], "image", "서쪽 지역이 가장 높다. 0.5 선을 넘은 곳이 많다. 북동쪽은 높다.", 2),   # 셋째는 다른 문장의 '낮'뿐
+        fig([200, 0, 245, 100], "image"), fig([255, 0, 300, 100], "text"),                         # 둘로 나눈 사진 — 하나가 틀림
+        fig([400, 0, 500, 100], "image")]}}
+    r = cmp.evaluate({}, golden, run)
+    assert r["figure_desc"] == {"route_ok": [1, 2], "described": [1, 2], "facts": [2, 4], "dropped": 2}
+    base = cmp.evaluate({}, golden, {"pages": {"1": [cmp._blk("figure", [2, 2, 98, 98], True, "", "chart")]}})
+    assert base["figure_desc"] == {"route_ok": [0, 2], "described": [0, 2], "facts": [0, 4], "dropped": 0}
+    rows = {c[0]: c[1:] for c in ([x.strip() for x in line.strip("|").split("|")]
+                                  for line in cmp.render({"a": r, "b": base}).splitlines())}
+    assert rows["그림 설명에 든 정답 사실"] == ["2/4 (50.0%)", "0/4 (0.0%)"]
+    assert rows["그림 설명에서 버린 문장(근거 없는 숫자·이름)"] == ["2", "0"]
+
+
+def test_fact_words_match_whole_numbers_and_split_figure_pieces():
+    """숫자 낱말은 앞뒤가 숫자가 아닐 때만('1일' 은 '21일' 에, '0일' 은 '30일' 에 없다). 엔진이 한 정답 그림을 큰 조각과 작은 조각으로
+    잡으면(작은 조각은 IoU 가 낮아도 정답 상자 안) 둘의 설명을 함께 본다."""
+    assert cmp._has("1일", "9월1일에가장많다.") and not cmp._has("1일", "21일에가장많다.")
+    assert not cmp._has(0, "2026년이다.") and cmp._has(0.5, "0.5선을넘었다.") and not cmp._has(0.5, "10.5선이다.")
+    golden = {"pages": {1: "normal"}, "figures": [
+        {"page": 1, "bbox": [246, 353, 522, 436], "kind": "photo", "caption": None, "route": "image",
+         "facts": [[["날개"], ["반점"]], [["촉수"], ["주둥이"]]]}]}
+    run = {"pages": {"1": [
+        {**cmp._blk("figure", [360, 352, 522, 436], True, "", "image"), "route": "image", "desc": "날개에 검은 반점이 있다."},
+        {**cmp._blk("figure", [244, 352, 344, 436], True, "", "image"), "route": "image", "desc": "촉수가 주둥이 옆에 있다."}]}}
+    assert cmp.evaluate({}, golden, run)["figure_desc"] == {"route_ok": [1, 1], "described": [1, 1], "facts": [2, 2], "dropped": 0}
+
+
+def test_load_kdp_figure_route_and_description(tmp_path):
+    blocks = [Block(id="p1.b01", type="chart", bbox=(50, 100, 500, 400), img_path="imgs/p1.b01.png", route="image",
+                    route_reason="chart", figure_desc="남서쪽이 높다.",
+                    provenance=[{"rule": "figure_desc", "model": "m", "dropped": ["가.", "나."]}]),
+              Block(id="p1.b02", type="text", bbox=(50, 420, 500, 440), text="본문")]
+    doc = Document(doc_id="sha256:ab", source=Source(paths=["a.pdf"], pages=1),
+                   parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"),
+                   pages=[Page(page_no=1, sheet_no=1, size=(595, 842), blocks=blocks)])
+    write_json(tmp_path / "document.json", doc.model_dump(mode="json", exclude_none=True))
+    write_json(tmp_path / "raw" / "engine.json", {"seconds": 1.0})
+    a, b = cmp.load_kdp(tmp_path)["pages"][1]
+    assert (a["route"], a["desc"], a["desc_dropped"]) == ("image", "남서쪽이 높다.", 2) and "route" not in b
+
+
 def test_list_item_split_into_two_blocks():
     golden = {"pages": {1: "normal"}, "lists": [{"page": 1, "bbox": [100, 200, 500, 260], "level": 1}]}
     def run(lv2):

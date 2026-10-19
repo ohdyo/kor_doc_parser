@@ -201,3 +201,9 @@ def test_section_path_numbers_are_stripped_not_flagged():
     assert [x.section_path for x in b] == [["Ⅲ. 고객센터 운영 개선 방안"], ["Ⅲ. 고객센터 운영 개선 방안", "1. 상담 인력 확충"],
                                            ["2. 문의처: 정보화팀 홍길동 주무관"], ["1. 사업 개요", "문의: 정보화팀"]]
     assert b[0].text == title                                           # 제목 블록 글은 지우지 않는다
+
+
+def test_figure_description_checked():
+    """그림 설명(D19)은 모델이 쓴 글이라 그림 제목의 번호를 옮겨 적을 수 있다 — 설명도 검사한다."""
+    b = detect_pii(_doc(_page(1, _b("image", figure_desc="그림 아래에 문의 전화 02-000-1234 가 적혀 있다.")))).pages[0].blocks[0]
+    assert b.pii == ["phone"]

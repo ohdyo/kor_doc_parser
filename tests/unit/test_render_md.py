@@ -114,6 +114,21 @@ def test_figure_link_and_figure_text():
                                '<a id="p1.b05"></a>\n![table](imgs/p1.b05.png)']
 
 
+def test_figure_description_and_text_route():
+    """그림 설명(D19)은 그림 링크 바로 뒤 문단으로, 글 갈래 그림의 그림 속 글은 울타리 없이 문단으로(내용이라 이스케이프)."""
+    md = _md(_page(1, ("chart", None, {"img_path": "imgs/p1.b01.png", "figure_text": "기온(℃)\n23.1", "route": "image",
+                                       "figure_desc": "남서쪽이 23.1℃로 가장 높다."}),
+                   ("image", None, {"img_path": "imgs/p1.b02.png", "figure_text": "- 3시간마다 모기기피제 사용\n야간활동 시 밝은색 긴 옷",
+                                    "route": "text"})))
+    assert _chunks(md)[1:] == ['<a id="p1.b01"></a>\n![chart](imgs/p1.b01.png)', "그림 설명: 남서쪽이 23.1℃로 가장 높다.",
+                               "```text\n기온(℃)\n23.1\n```",
+                               '<a id="p1.b02"></a>\n![image](imgs/p1.b02.png)',
+                               "\\- 3시간마다 모기기피제 사용\n야간활동 시 밝은색 긴 옷"]
+    numbered = _md(_page(1, ("image", None, {"img_path": "imgs/p1.b01.png", "route": "text",
+                                             "figure_text": "    2. 의심 증상 시 보건소 신고\n3) 귀국 후 진료"})))
+    assert _chunks(numbered)[2] == "2\\. 의심 증상 시 보건소 신고\n3) 귀국 후 진료"   # 새 문단 첫 줄은 어느 번호든 목록·들여쓰기는 코드
+
+
 def test_display_formula():
     md = _md(_page(1, ("display_formula", " $$ E = mc^2 $$ ", {"img_path": "imgs/p1.b01.png"}),   # PaddleX 가 \[ \] 를 바꾼 꼴
                    ("display_formula", "\\frac{a}{b} = \\$5\n\n+ c"),          # 구분자 없는 꼴, \$ 는 글자 $

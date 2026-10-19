@@ -9,8 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
-from . import __version__
-from .assemble.figures import join_wrapped, table_img_names
+from . import __version__, figure_desc
+from .assemble.figures import attach_descriptions, join_wrapped, route_figures, table_img_names
 from .assemble.headings import headings
 from .assemble.lists import lists
 from .assemble.normalize import normalize
@@ -38,7 +38,7 @@ from .render_md import render_markdown
 from .schema import Document, ParserInfo, Source
 from .textlayer.extract import apply_text_layer, display_chars, mark_hidden
 
-ASSEMBLE_CODE_VERSION = "10"
+ASSEMBLE_CODE_VERSION = "11"
 JSONL_FIELDS = OUTPUT_FIELDS
 
 
@@ -49,6 +49,10 @@ class RawIncompleteError(RuntimeError):
 def parse_pdf(pdf_path, out_root=None, settings: Settings | None = None, engine: Engine | None = None) -> Document:
     t0 = time.perf_counter()
     settings = settings or load_settings()
+    if settings.parse.describe.enabled and not settings.env.describer.server_url:   # 엔진을 다 돌린 뒤에 멈추지 않게
+        raise ValueError("describe.enabled 인데 configs/env.yaml 의 describer.server_url 이 없다")
+    if settings.parse.describe.enabled and not settings.parse.output.keep_raw:     # 크롭과 응답 기록이 raw/ 에 있다
+        raise ValueError("describe.enabled 는 output.keep_raw true 가 필요하다")
     pdf_path = Path(pdf_path).resolve()
     data = pdf_path.read_bytes()
     doc_id = doc_id_of(data)
@@ -79,7 +83,11 @@ def parse_pdf(pdf_path, out_root=None, settings: Settings | None = None, engine:
         write_text(tmp_dir / "paddlex_config.yaml", snapshot)
     shutil.rmtree(raw_dir, ignore_errors=True)
     tmp_dir.rename(raw_dir)
-    return _finish(info, raws, doc_dir, settings)
+    doc = _finish(info, raws, doc_dir, settings)
+    # 그림 설명(D19) — 조립이 고른 그림만 부르고 받은 것이 있으면 다시 조립한다. 실패한 그림은 QC 가 세고 kdp describe 가 다시 부른다
+    if settings.parse.describe.enabled and figure_desc.run(doc, doc_dir, settings)[0]:
+        doc = _finish(info, raws, doc_dir, settings)
+    return doc
 
 
 def reassemble(doc_dir, settings: Settings | None = None) -> Document:
@@ -91,6 +99,14 @@ def reassemble(doc_dir, settings: Settings | None = None) -> Document:
     info = PdfInfo.from_dict(read_json(raw_dir / "doc.json"))
     raws = list(ReplayEngine(raw_dir).run())
     return _finish(info, raws, Path(doc_dir), settings)
+
+
+def describe(doc_dir, settings: Settings | None = None) -> tuple[Document, int, list[str]]:
+    """그림 설명이 빠진 그림만 설명 VLM 에 보내고 다시 조립한다(kdp describe — 설명 모델을 바꿨거나 서버가 없던 문서)."""
+    settings = settings or load_settings()
+    doc = reassemble(doc_dir, settings)
+    new, failed = figure_desc.run(doc, Path(doc_dir), settings)
+    return (reassemble(doc_dir, settings) if new else doc), new, failed
 
 
 def _pages(pdf, info: PdfInfo, settings: Settings, raw_dir: Path):
@@ -170,11 +186,14 @@ def _finish(info: PdfInfo, raws, doc_dir: Path, settings: Settings) -> Document:
     doc = classify_pages(doc, settings.parse.classify)
     doc = tables(doc)                                  # 배치용 표를 글로 푼 뒤에 제목·항목을 본다
     doc = merge_tables(doc)                            # 제목보다 먼저 — 버린 '(계속)' 표시가 섹션 경로에 들어가지 않게
+    doc = route_figures(doc)                           # 그림 글·제목이 정해진 뒤 — 글만으로 되는 그림 / 그림과 함께 볼 그림(D19)
     doc = headings(doc, info.toc)
     doc = lists(doc)
     doc = join_wrapped(doc)                            # 같은 쪽 이음이 먼저 — 쪽 넘김 이음이 묶음 대표를 가리키게
     doc = join_paragraphs(doc)
     doc = promote_meta(doc, settings.parse.meta)
+    doc = attach_descriptions(doc, figure_desc.load(doc_dir / "raw") if settings.parse.describe.enabled else {},
+                              settings.parse.describe)          # 응답 기록만 읽는다(D19) — 설명 글도 개인정보 검사를 받게 그 앞에
     doc = detect_pii(doc)
     doc = assign_order(doc)
     doc = run_checks(doc, raws, settings.parse.qc)

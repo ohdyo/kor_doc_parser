@@ -141,7 +141,7 @@ def _cells(html: str):
 
 def _texts(b: Block):
     """(글, 단서 글, 이름 칸 글) — 글·그림 속 글자는 번호 앞뒤에서, 표는 칸마다 같은 행·열 머리칸에서 단서를 찾는다."""
-    for s in (b.text, b.figure_text):
+    for s in (b.text, b.figure_text, b.figure_desc):
         if s:
             yield s, None, ""
     if b.html:

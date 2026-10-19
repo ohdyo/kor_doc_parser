@@ -6,8 +6,9 @@ import pytest
 
 from kdp.io.ids import doc_dirname
 from kdp.io.write import read_json_gz
-from kdp.pipeline import RawIncompleteError, parse_pdf, reassemble
+from kdp.pipeline import RawIncompleteError, describe, parse_pdf, reassemble
 from kdp.schema import json_schema
+from tests.fixtures.fake_vlm import FakeVLM
 from tests.fixtures.stub_engine import StubEngine
 from tests.fixtures.synth import nonbmp_pdf, nup_pdf, report_pdf, with_page_box
 
@@ -70,3 +71,31 @@ def test_reassemble_refuses_missing_logical_page(tmp_path, korean_font, settings
         (d / "raw" / f).unlink()
     with pytest.raises(RawIncompleteError):
         reassemble(d, settings)
+
+
+def test_figure_description_parse_reassemble_describe(tmp_path, korean_font, settings):
+    """그림 설명(D19) — parse 가 조립이 고른 그래프만 설명 서버에 보내 근거 있는 문장만 붙이고, 재조립은 서버 없이 같은 출력을
+    내며, kdp describe 는 기록된 그림을 다시 부르지 않는다."""
+    with FakeVLM(lambda query, image: (200, "남서쪽이 23.1℃로 가장 높다. 최고는 30.5℃다.", "stop")) as vlm:
+        s = settings.model_copy(deep=True)
+        s.parse.describe.enabled, s.parse.describe.model = True, "served-name"
+        s.env.describer.server_url = vlm.url
+        _, doc, d = _parse(tmp_path, report_pdf(korean_font, 2), StubEngine(chart=True), s)
+        figs = [b for p in doc.pages for b in p.blocks if b.type == "chart"]
+        assert [(b.route, b.figure_desc) for b in figs] == [("image", "남서쪽이 23.1℃로 가장 높다.")] * 2   # 30.5 는 그림에 없다
+        assert len(vlm.requests) == 2 and doc.qc.undescribed_figures == 0
+        rows = [json.loads(line) for line in (d / "blocks.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert [r["figure_desc"] for r in rows if r["type"] == "chart"] == ["남서쪽이 23.1℃로 가장 높다."] * 2
+        before = {f: (d / f).read_bytes() for f in ("document.json", "blocks.jsonl", "document.md")}
+        s.env.describer.server_url = None                                         # 재조립은 기록만 읽는다
+        reassemble(d, s)
+        assert {f: (d / f).read_bytes() for f in before} == before
+        s.env.describer.server_url = vlm.url
+        assert describe(d, s)[1:] == (0, []) and len(vlm.requests) == 2
+
+
+def test_describe_enabled_needs_server_before_engine_runs(tmp_path, korean_font, settings):
+    s = settings.model_copy(deep=True)
+    s.parse.describe.enabled, s.env.describer.server_url = True, None
+    with pytest.raises(ValueError, match="describer.server_url"):
+        _parse(tmp_path, report_pdf(korean_font, 1), StubEngine(fail_after=0), s)   # 엔진을 돌리기 전에 멈춘다

@@ -46,7 +46,7 @@ class FakeVLM:
                 url, query = content[0]["image_url"]["url"], content[1]["text"]
                 image = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
                 outer.requests.append({"query": query, "size": image.size, "model": body["model"],
-                                       "max_completion_tokens": body.get("max_completion_tokens")})
+                                       "max_completion_tokens": body.get("max_completion_tokens"), "body": body})
                 code, text, finish = outer.respond(query, image)
                 if code != 200:
                     self._send(code, {"error": {"message": text}})

@@ -34,7 +34,8 @@ def assign_order(doc: Document) -> Document:
 
 
 OUTPUT_FIELDS = ("type", "bbox", "section_path", "heading_level", "list_level", "text", "html", "continues_from", "header_rows",
-                 "caption_id", "unit", "note_ids", "route", "route_reason", "img_path", "figure_text", "truncated", "pii")
+                 "caption_id", "unit", "note_ids", "route", "route_reason", "img_path", "figure_text", "figure_desc", "truncated",
+                 "pii")
 
 
 def output_rows(doc: Document):

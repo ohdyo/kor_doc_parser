@@ -39,3 +39,9 @@ batch:
   doc_retries: 1
 
 output: { write_markdown: true, write_jsonl: true, save_images: true, keep_raw: true }
+
+describe:                            # D19 — 그림과 글자를 함께 봐야 하는 그림(그림 갈래 image)을 범용 VLM 이 한국어 몇 문장으로 설명
+  enabled: false                     # GPU 서버에서 재고 켠다 — 켜면 env.yaml 의 describer.server_url 이 있어야 한다
+  model: skt/A.X-4.0-VL-Light        # 국내 모델(SK텔레콤, Apache-2.0) — 비교: dnotitia/DNA3.0-4B. 설명 서버가 올린 이름과 같게
+  max_tokens: 512
+  min_area: 0.01                     # 논리 페이지 넓이 대비 — 이보다 작은 그림(아이콘)은 설명하지 않는다

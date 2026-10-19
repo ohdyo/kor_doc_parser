@@ -26,6 +26,7 @@ _ESC = re.compile(r"^( {0,3})(?=#{1,6}(?:[ \t]|$)|[-+*](?:[ \t]|$)|>|```|~~~|<[A
 _ONE = re.compile(r"^( {0,3}0*1)(?=[.)](?:[ \t]|$))")    # 번호 목록은 1 로 시작할 때만 문단을 끊는다 — '2.'·'2026.' 은 둔다
 _DOLLAR = re.compile(r"(?<!\\)\$")                         # 수식 구분자 — \$ 는 글자
 _TABLE = re.compile(r"\s*<table[\s>]", re.I)              # 표 HTML — 칸을 못 읽으면 PaddleX 가 VLM 원문(평문)을 그대로 둔다
+_NUM_START = re.compile(r"^(\d{1,9})(?=[.)](?:[ \t]|$))")  # 문단 첫 줄의 번호 — '2.'·'10)' 도 번호 목록을 연다
 
 
 def _lines(text: str) -> list[str]:
@@ -51,7 +52,8 @@ def _text(b: Block, text: str) -> str:
 
 
 def _parts(b: Block) -> list[str]:
-    """본문(표 HTML·수식·글), 크롭 이미지 링크, 그림 속 글자 순."""
+    """본문(표 HTML·수식·글), 크롭 이미지 링크, 그림 설명, 그림 속 글자 순. 글 갈래 그림(D19)의 그림 속 글은 내용이라 문단으로,
+    그 밖의 그림 속 글은 그림에 딸린 이름표라 줄을 지키는 울타리로 낸다."""
     text = (b.text or "").strip()
     parts = []
     if b.html:                                     # 표는 HTML 그대로(병합 셀) — 표 제목 블록은 제자리에서 따로 나간다
@@ -63,9 +65,16 @@ def _parts(b: Block) -> list[str]:
         parts.append(_text(b, text))
     if b.img_path and (b.type in FIGURE_LABELS or b.route == "image" or not parts):
         parts.append(f"![{b.type}]({b.img_path})")  # 그림·차트, 이미지 갈래 표(D18), 글이 없는 블록
+    if b.figure_desc:
+        parts.append(_text(b, "그림 설명: " + b.figure_desc))
     if b.figure_text and (lines := _lines(b.figure_text)):
-        fence = "`" * max(3, max(map(len, re.findall(r"`+", b.figure_text)), default=0) + 1)
-        parts.append(f"{fence}text\n" + "\n".join(lines) + f"\n{fence}")   # 그림 속 글자 — 줄을 지키고 이스케이프 없이
+        if b.route == "text" and b.type in FIGURE_LABELS:           # 글 갈래 그림(D19) — 그림 속 글이 곧 내용
+            body = [_escape(ln) for ln in lines]
+            body[0] = _NUM_START.sub(r"\1\\", _escape(lines[0].lstrip()), count=1)   # 새 문단 첫 줄 — 어느 번호든 목록·들여쓰면 코드가 된다
+            parts.append("\n".join(body))
+        else:
+            fence = "`" * max(3, max(map(len, re.findall(r"`+", b.figure_text)), default=0) + 1)
+            parts.append(f"{fence}text\n" + "\n".join(lines) + f"\n{fence}")   # 그림 속 글자 — 줄을 지키고 이스케이프 없이
     return parts
 
 

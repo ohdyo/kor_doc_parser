@@ -53,3 +53,17 @@ def test_truncated_blocks_counted_even_when_merged_or_emptied():
                    parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"), pages=[page])
     qc = run_checks(doc, [_raw(1, 0.05)], QCCfg()).qc
     assert (qc.status, qc.truncated_blocks) == ("review", 2)
+
+
+def test_undescribed_figures_counted():
+    """설명할 그림에 설명 응답이 없으면(D19) 검수로 — 버린 쪽의 그림은 세지 않는다."""
+    miss = [{"rule": "figure_desc_missing"}]
+    pages = [Page(page_no=1, sheet_no=1, size=(595, 842), blocks=[
+                 Block(id="p1.b01", type="chart", bbox=(70, 100, 520, 400), img_path="imgs/p1.b01.png", provenance=miss),
+                 Block(id="p1.b02", type="text", bbox=(70, 420, 520, 600), text="본문")]),
+             Page(page_no=2, sheet_no=2, size=(595, 842), keep=False, page_class="cover", blocks=[
+                 Block(id="p2.b01", type="chart", bbox=(70, 100, 520, 400), img_path="imgs/p2.b01.png", provenance=miss)])]
+    doc = Document(doc_id="sha256:ab", source=Source(paths=["a.pdf"], pages=2),
+                   parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"), pages=pages)
+    qc = run_checks(doc, [_raw(1, 0.05), _raw(2, 0.05)], QCCfg()).qc
+    assert (qc.status, qc.reasons, qc.undescribed_figures) == ("review", ["figure_desc_missing"], 1)

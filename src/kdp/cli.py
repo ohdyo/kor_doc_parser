@@ -1,4 +1,4 @@
-"""kdp 명령(설계 8장): doctor · parse · reassemble · schema. batch·qc·export-ls 는 M4."""
+"""kdp 명령(설계 8장): doctor · parse · reassemble · describe · schema. batch·qc·export-ls 는 M4."""
 from __future__ import annotations
 
 import json
@@ -70,6 +70,16 @@ def doctor(env: Optional[Path] = EnvOpt, config: Optional[Path] = CfgOpt):
         except OSError as e:
             rows.append(("FAIL", "VLM 서버", f"{s.env.vlm.server_url} — {e}"))
 
+    if s.parse.describe.enabled:                         # 그림 설명 VLM(D19)
+        from .engine.paddle_vl import served_models
+
+        try:
+            served = served_models(s.env.describer.server_url, s.env.describer.api_key)
+            ok = s.parse.describe.model in served
+            rows.append(("OK" if ok else "FAIL", "그림 설명 모델 이름", f"요청 {s.parse.describe.model} / 서버 {list(served)}"))
+        except (OSError, ValueError) as e:
+            rows.append(("FAIL", "그림 설명 서버", f"{s.env.describer.server_url} — {e}"))
+
     font = s.env.test.korean_font
     rows.append(("OK" if font and Path(font).exists() else "WARN", "테스트 한글 글꼴", str(font)))
 
@@ -89,6 +99,8 @@ def parse(pdf: Path, out: Optional[Path] = typer.Option(None, "-o", "--out", hel
     doc = parse_pdf(pdf, out, s)
     out_dir = Path(out or s.env.paths.out_dir) / doc_dirname(doc.doc_id)
     typer.echo(f"{doc.doc_id}  qc={doc.qc.status}  → {out_dir}")
+    if doc.qc.undescribed_figures:
+        typer.echo(f"  그림 설명을 못 받은 그림 {doc.qc.undescribed_figures}개 — 설명 서버를 확인하고 kdp describe")
 
 
 @app.command()
@@ -101,6 +113,26 @@ def reassemble(path: Path, env: Optional[Path] = EnvOpt, config: Optional[Path] 
     for d in dirs:
         doc = _reassemble(d, s)
         typer.echo(f"{doc.doc_id}  qc={doc.qc.status}")
+
+
+@app.command()
+def describe(path: Path, env: Optional[Path] = EnvOpt, config: Optional[Path] = CfgOpt):
+    """그림 설명(D19)이 빠진 그림만 설명 VLM 에 보내고 다시 조립한다. 문서 폴더 하나 또는 그것들이 든 출력 폴더."""
+    from .pipeline import describe as _describe
+
+    s = load_settings(env, config)
+    if not s.parse.describe.enabled:
+        typer.echo("describe.enabled 가 꺼져 있다(configs/parse/default.yaml)")
+        raise typer.Exit(1)
+    if not s.env.describer.server_url:
+        typer.echo("configs/env.yaml 의 describer.server_url 이 없다")
+        raise typer.Exit(1)
+    dirs = [path] if (path / "raw").is_dir() else sorted(p for p in path.iterdir() if (p / "raw").is_dir())
+    for d in dirs:
+        doc, new, failed = _describe(d, s)
+        typer.echo(f"{doc.doc_id}  새 설명 {new}  실패 {len(failed)}  qc={doc.qc.status}")
+        for f in failed:
+            typer.echo(f"  실패 {f}")
 
 
 @app.command()

@@ -1,6 +1,6 @@
 #!/bin/bash
 # GPU 서버 환경 설치 — 서버를 새로 켤 때마다 서버에서 한 번 돌린다(README.md). 버전은 기획서 7.4.
-#   kdp-serve : vLLM 서버(vllm 0.31.0 · torch 2.13.0(CUDA 13) · transformers 5.16)
+#   kdp-serve : vLLM 서버(vllm 0.31.0 · torch 2.13.0(드라이버 580 이상 CUDA 13, 미만 CUDA 12.9) · transformers 5.16)
 #   kdp-paddle: 파서(paddlepaddle-gpu 3.3.1 cu126 · paddleocr 3.7.0 · paddlex 3.7.2 · 이 저장소)
 # 사용: bash /workspace/kor_doc_parser/gpu_server/setup_envs.sh   (먼저 이 컴퓨터에서 push.sh 로 저장소를 보낸다)
 set -euo pipefail
@@ -10,7 +10,16 @@ ENVS=/workspace/envs
 command -v uv >/dev/null || pip install -q --break-system-packages uv     # 시스템 pip 는 그냥은 설치를 거부한다
 apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fonts-noto-cjk bc >/dev/null   # 테스트 한글 글꼴
 uv venv "$ENVS/kdp-serve" --python 3.12
-VIRTUAL_ENV="$ENVS/kdp-serve" uv pip install "vllm==0.31.0" "transformers>=5.16,<5.17"
+DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | cut -d. -f1)
+if [ "$DRIVER" -ge 580 ]; then                     # PyPI 판은 CUDA 13 빌드 — 드라이버 580 이상
+  VIRTUAL_ENV="$ENVS/kdp-serve" uv pip install "vllm==0.31.0" "transformers>=5.16,<5.17"
+else                                               # 드라이버 580 미만(2026-10-19 서버 570): vLLM 의 CUDA 12.9 판 + torch cu129
+  VIRTUAL_ENV="$ENVS/kdp-serve" uv pip install --torch-backend cu129 \
+    "vllm @ https://github.com/vllm-project/vllm/releases/download/v0.31.0/vllm-0.31.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" \
+    "transformers>=5.16,<5.17"
+  # PyPI 의 torchcodec 0.17.0 은 CUDA 13(libnvrtc.so.13) 빌드라 vLLM 이 뜨다 멈춘다 — 영상·소리는 안 쓰므로 CPU 판으로(cu129 판은 0.16 까지)
+  VIRTUAL_ENV="$ENVS/kdp-serve" uv pip install --reinstall --no-deps "torchcodec==0.17.0+cpu" --index-url https://download.pytorch.org/whl/cpu
+fi
 uv venv "$ENVS/kdp-paddle" --python 3.12
 VIRTUAL_ENV="$ENVS/kdp-paddle" uv pip install pip
 "$ENVS/kdp-paddle/bin/python" -m pip install -q paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/

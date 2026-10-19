@@ -28,6 +28,12 @@ class VlmEnv(_Cfg):
     max_concurrency: int = 32
 
 
+class DescriberEnv(_Cfg):
+    server_url: str | None = None        # 그림 설명 VLM 서버(OpenAI 호환 — D19)
+    api_key: str | None = None
+    max_concurrency: int = 8
+
+
 class ModelsEnv(_Cfg):
     layout_dir: str | None = None
     vlm_dir: str | None = None
@@ -55,6 +61,7 @@ class TestEnv(_Cfg):
 class Env(_Cfg):
     device: str = "cpu"
     vlm: VlmEnv = Field(default_factory=VlmEnv)
+    describer: DescriberEnv = Field(default_factory=DescriberEnv)
     models: ModelsEnv = Field(default_factory=ModelsEnv)
     paddlex: PaddlexEnv = Field(default_factory=PaddlexEnv)
     paths: PathsEnv = Field(default_factory=PathsEnv)
@@ -113,6 +120,13 @@ class BatchCfg(_Cfg):
     doc_retries: int = 1
 
 
+class DescribeCfg(_Cfg):
+    enabled: bool = False                # D19 — 그림과 함께 봐야 하는 그림(그림 갈래 image)을 범용 VLM 이 한국어로 설명한다
+    model: str = "skt/A.X-4.0-VL-Light"  # 국내 모델(SK텔레콤, Apache-2.0) — 설명 서버가 올린 이름과 같게
+    max_tokens: int = 512
+    min_area: float = 0.01               # 논리 페이지 넓이 대비 — 이보다 작은 그림(아이콘)은 설명하지 않는다
+
+
 class OutputCfg(_Cfg):
     write_markdown: bool = True
     write_jsonl: bool = True
@@ -130,6 +144,7 @@ class ParseConfig(_Cfg):
     classify: Classify = Field(default_factory=Classify)
     meta: MetaCfg = Field(default_factory=MetaCfg)
     qc: QCCfg = Field(default_factory=QCCfg)
+    describe: DescribeCfg = Field(default_factory=DescribeCfg)
     batch: BatchCfg = Field(default_factory=BatchCfg)
     output: OutputCfg = Field(default_factory=OutputCfg)
 
@@ -189,12 +204,13 @@ def engine_hash(s: Settings, engine_desc: dict) -> str:
 
 
 def assemble_hash(s: Settings, code_version: str) -> str:
-    """이것만 바뀌면 kdp reassemble 로 충분하다."""
+    """이것만 바뀌면 kdp reassemble 로 충분하다(그림 설명 모델을 바꾸면 kdp describe 로 빠진 설명을 채운다)."""
     p = s.parse
     return digest({
         "text_layer": p.text_layer.model_dump(),
         "classify": p.classify.model_dump(),
         "meta": p.meta.model_dump(),
         "qc": p.qc.model_dump(),
+        "describe": p.describe.model_dump(),
         "code": code_version,
     })
