@@ -8,7 +8,7 @@ E="ssh -i $KEY -p $PORT -o StrictHostKeyChecking=accept-new"
 DEST=root@$HOST
 PUBLIC=(test2.pdf test3.pdf)                         # 서버에 올리는 PDF — 공개 정부 문서만, 이름으로
 $E "$DEST" 'mkdir -p /workspace/kor_doc_parser /root/.paddlex/official_models'
-rsync -az -e "$E" --exclude .git --exclude out --exclude out_gpu --exclude '*.pdf' --exclude '*.PDF' \
+rsync -az -e "$E" --exclude .git --exclude out --exclude out_gpu --exclude datasets --exclude runs --exclude '*.pdf' --exclude '*.PDF' \
   --exclude configs/env.yaml --exclude __pycache__ --exclude '*.egg-info' --exclude .pytest_cache ./ "$DEST:/workspace/kor_doc_parser/"
 rsync -az -e "$E" "${PUBLIC[@]}" "$DEST:/workspace/kor_doc_parser/"
 rsync -az -e "$E" ~/.paddlex/official_models/PP-DocLayoutV3 ~/.paddlex/official_models/PP-LCNet_x1_0_doc_ori \
