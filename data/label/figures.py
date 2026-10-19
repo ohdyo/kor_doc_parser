@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from kdp.assemble.figures import _caption, _context, describe_targets  # noqa: E402
 from kdp.config import DescribeCfg  # noqa: E402
 from kdp.enrich.pii import PHONE  # noqa: E402
-from kdp.figure_qa import QUESTIONS, alts, figure_text, nkey, prompt, same_short  # noqa: E402
+from kdp.figure_qa import DIAGRAM, NEEDS_X, QUESTIONS, alts, figure_text, nkey, prompt, same_short  # noqa: E402
 from kdp.schema import Document  # noqa: E402
 
 EVAL_DOCS = ("test2", "test3", "test4", "test5")    # 평가 문서(eval/judged) — 학습 자료에 넣지 않는다
@@ -61,6 +61,11 @@ LABEL_GUIDE = """당신은 한국어 공공 문서의 그래프·지도를 보�
   곳이 넓게 퍼져 있으면 가장 진한(옅은) 곳이 있는 칸으로 답합니다. 편차 지도는 편차 값 자체의 높낮이로, 퍼센타일 지도는 퍼센타일
   값의 높낮이로 봅니다.
 - 흐름: 처음에서 끝까지의 큰 흐름. 오르내림만 있고 방향이 없으면 '뚜렷한 흐름 없음'.
+- 흐름도 물음(flow_first·flow_last·flow_next): 화살표를 따라가 처음 단계·마지막 단계·'X' 바로 다음 단계의 상자 글을 그대로
+  적습니다. 상자 번호(①·1단계·STEP 1)는 떼고, 번호를 붙인 꼴은 '|' 로 함께 적어도 됩니다. 갈림(예/아니오 등)으로 '바로 다음'이
+  하나로 정해지지 않거나, 'X' 가 이 그림의 단계 상자 글이 아니거나, 흐름도가 아니면 ok_question 을 false 로.
+- 조직도·체계도 물음(org_top·org_parent): 맨 위 상자, 'X' 와 선으로 이어진 바로 위 상자의 글을 그대로. 조직도·체계도가 아니거나
+  'X' 가 상자 글이 아니면 false. 상자에 사람 이름이 적혀 있으면 이름은 답·note 어디에도 쓰지 말고 false.
 - 물음이 이 그림에 맞지 않으면 ok_question 을 false 로, answer 는 빈 글로 둡니다 — 지도가 아닌데 방위를 묻거나 그래프가 아닌데
   흐름을 묻는 경우, 값이 없음, 지도·계열이 여럿이라 어느 것인지 정할 수 없음, 가장 큰 것이 둘 이상 거의 같아 그림으로 가릴 수 없음,
   확대해도 분명하지 않음.
@@ -128,6 +133,28 @@ def excluded_docs() -> tuple[set[str], set[str]]:
     return shas, names
 
 
+def _subject(qid: str, text: str) -> str | None:
+    """'X' 물음의 X — 그림에서 읽은 글자 가운데 상자 글 같은 줄(2~20자, 숫자만·가린 줄은 아님)을 qid 로 정해 고른다(두 라벨러가 같은
+    물음을 받는다). 상자 글이 아니면 라벨러가 물음이 맞지 않다고 뺀다."""
+    lines = [s.strip() for s in text.split(" / ")]
+    lines = [s for s in lines if 2 <= len(s) <= 20 and not re.fullmatch(r"[\d.,%\s()~-]+", s) and "○○○" not in s and "전화번호" not in s]
+    return random.Random(qid).choice(lines) if lines else None
+
+
+def _questions(tag: str, b, text: str) -> list[dict]:
+    """그림 하나의 물음 — 검출기가 그래프·지도(chart)로 본 블록은 그래프·지도 물음만, 그 밖의 그림(image)은 흐름도·조직도 물음도."""
+    out = []
+    for qt, (q, o) in QUESTIONS.items():
+        if b.type == "chart" and qt in DIAGRAM:
+            continue
+        qid = f"{tag}:{b.id}:{qt}"
+        x = _subject(qid, text) if qt in NEEDS_X else None
+        if qt in NEEDS_X and not x:
+            continue
+        out.append({"qid": qid, "qtype": qt, "question": q.replace("{x}", x or ""), "options": o, **({"x": x} if x else {})})
+    return out
+
+
 def pack(a) -> None:
     out = a.pack
     (out / "imgs").mkdir(parents=True, exist_ok=True)
@@ -148,9 +175,7 @@ def pack(a) -> None:
             cap = clean(_caption(page, b))
             text = clean(figure_text((b.figure_text or "").splitlines()))
             items.append({"doc": tag, "block": b.id, "image": str((out / img).resolve()), "caption": cap or "(없음)",
-                          "figure_text": text, "before": clean(before), "after": clean(after),
-                          "questions": [{"qid": f"{tag}:{b.id}:{qt}", "qtype": qt, "question": q, "options": o}
-                                        for qt, (q, o) in QUESTIONS.items()]})
+                          "figure_text": text, "before": clean(before), "after": clean(after), "questions": _questions(tag, b, text)})
     (out / "figures.json").write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"그림 {len(items)}개 · 물음 {sum(len(x['questions']) for x in items)}개 → {out / 'figures.json'}")
 
@@ -187,7 +212,7 @@ def merge(a) -> None:
                     order = rng.sample(opts, len(opts))
                     row = {"prompt": prompt(q["qtype"], it["caption"], it["figure_text"], order), "answer": str(order.index(ans) + 1)}
                 else:
-                    row = {"prompt": prompt(q["qtype"], it["caption"], it["figure_text"]), "answer": ans}
+                    row = {"prompt": prompt(q["qtype"], it["caption"], it["figure_text"], x=q.get("x")), "answer": ans}
                 img = a.pack / "imgs" / Path(it["image"]).name           # pack 폴더를 옮겨도 그 폴더의 그림으로
                 if not img.exists():
                     sys.exit(f"그림이 없다: {img}")

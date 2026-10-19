@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from kdp.figure_qa import DIRS, QUESTIONS, TREND, alts, nkey, prompt, same_short
+from kdp.figure_qa import DIAG_TAIL, DIAGRAM, DIRS, QUESTIONS, TREND, alts, nkey, prompt, same_short
 
 ROOT = Path(__file__).parents[2]
 
@@ -40,6 +40,14 @@ def test_prompt_matches_eval_questions():
         assert prompt(q["qtype"], cap, text, q["options_A"]) == q["prompt_A"]
         if q["options_B"]:
             assert prompt(q["qtype"], cap, text, q["options_B"]) == q["prompt_B"]
+
+
+def test_diagram_prompt_puts_box_text_and_tail():
+    p = prompt("flow_next", "신청 절차", "신청 / 접수", x="접수")
+    assert "'접수' 바로 다음 단계" in p and p.endswith(DIAG_TAIL)
+    assert prompt("chart_high", "a", "b").endswith("주된 값으로 봅니다.")                 # 그래프 단답 꼬리는 그대로
+    with pytest.raises(AssertionError):
+        prompt("org_parent", "조직도", "(없음)")                         # x 없이는 만들지 않는다
 
 
 def test_same_short_is_strict_for_numbers_and_fragments():
@@ -109,18 +117,39 @@ def test_questions_answers_point_to_truth():
 
 def test_generated_figures_have_consistent_answers(tmp_path):
     pytest.importorskip("matplotlib")
-    synth.main([str(tmp_path), "--charts", "4", "--maps", "4", "--seed", "1"])
+    synth.main([str(tmp_path), "--charts", "4", "--maps", "4", "--flows", "4", "--orgs", "4", "--seed", "1"])
     rows = [json.loads(x) for f in ("train.jsonl", "val.jsonl") for x in open(tmp_path / f, encoding="utf-8")]
     assert rows and all((tmp_path / r["image"]).exists() for r in rows)
+    assert {"flow_first", "flow_next", "org_top", "org_parent"} <= {r["qtype"] for r in rows}
     for r in rows:
         m = r["meta"]
-        if r["qtype"] in ("map_high", "map_low"):
+        if r["qtype"] == "flow_first":
+            assert r["answer"] == m["steps"][0] == m["first"]
+        elif r["qtype"] == "flow_next":
+            i = m["steps"].index(r["x"])
+            assert r["answer"] == m["steps"][i + 1] and f"'{r['x']}'" in r["prompt"]
+        elif r["qtype"] == "org_top":
+            assert r["answer"] == m["root"] and r["answer"] not in m["parent"]
+        elif r["qtype"] == "org_parent":
+            assert m["parent"][r["x"]] == r["answer"] and f"'{r['x']}'" in r["prompt"]
+        elif r["qtype"] in ("map_high", "map_low"):
             assert opts(r)[int(r["answer"]) - 1] == (m["d_hi"] if r["qtype"] == "map_high" else m["d_lo"])
         elif r["qtype"] == "chart_high":
             vals = [float(v.replace(",", "")) for v in m["values"]]
             assert vals.count(max(vals)) == 1 and vals.index(max(vals)) == m["i_max"] and r["answer"] == m["labels"][m["i_max"]]
         elif r["qtype"] == "chart_trend":
             assert opts(r)[int(r["answer"]) - 1] == m["trend"]
+
+
+def test_label_questions_by_block_type():
+    """검출기가 그래프·지도로 본 블록에는 흐름도·조직도 물음을 내지 않고, 'X' 는 그림 글자에서 qid 로 정해 고른다(두 라벨러가 같은 물음)."""
+    chart = label._questions("d", SimpleNamespace(type="chart", id="p1.b1"), "신청 / 접수 / 심사")
+    assert not {q["qtype"] for q in chart} & set(DIAGRAM)
+    img = label._questions("d", SimpleNamespace(type="image", id="p1.b2"), "신청 / 접수 / 심사 / 2024 / ○○○ 과장")
+    nxt = [q for q in img if q["qtype"] == "flow_next"]
+    assert len(nxt) == 1 and nxt[0]["x"] in ("신청", "접수", "심사") and f"'{nxt[0]['x']}'" in nxt[0]["question"]
+    assert img == label._questions("d", SimpleNamespace(type="image", id="p1.b2"), "신청 / 접수 / 심사 / 2024 / ○○○ 과장")
+    assert not [q for q in label._questions("d", SimpleNamespace(type="image", id="p1.b3"), "2024 / 15.2") if q["qtype"] == "flow_next"]
 
 
 def test_label_agreement():

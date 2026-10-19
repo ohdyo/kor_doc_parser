@@ -1,8 +1,9 @@
-"""합성 그래프·지도와 물음·정답(그림 해석 튜닝 D20, 기획서 7.10) — 정답은 그린 값에서 코드가 계산한다.
+"""합성 그래프·지도·흐름도·조직도와 물음·정답(그림 해석 튜닝 D20, 기획서 7.10) — 정답은 그린 값·연결에서 코드가 계산한다.
 그래프: 막대·묶음 막대·선·막대+선(두 축)·평년선, 가로축은 해·월·순·주·날짜·항목. 물음은 가장 큰·작은 때나 항목(단답), 전체 흐름(보기),
 가장 큰 값 읽기. 지도: 무작위 땅 모양을 시군처럼 나눠 단계 색으로 칠한 단계구분도와 등치선 채움 지도. 물음은 가장 높은·낮은 곳의 방위,
-범례 단위 읽기. 평가 문서(test2~test5)의 그림은 본뜨지 않고, 지명·항목 이름은 지어낸다. 물음 꼴은 kdp.figure_qa(평가와 같다).
-사용(GPU 서버 kdp-paddle env, matplotlib 필요): python data/synth/figures.py OUT_DIR --charts 1000 --maps 1000 --seed 0
+범례 단위 읽기. 흐름도: 단계 상자와 화살표(가로·세로·줄 바꿈, 번호, 예/아니오 갈림) — 처음·마지막·'X' 다음 단계. 조직도: 위아래 상자와
+선 — 맨 위·'X' 바로 위. 평가 문서(test2~test5)의 그림은 본뜨지 않고, 지명·항목·조직 이름은 지어낸다. 물음 꼴은 kdp.figure_qa(평가와 같다).
+사용(GPU 서버 kdp-paddle env, matplotlib 필요): python data/synth/figures.py OUT_DIR --charts 1000 --maps 1000 --flows 500 --orgs 500 --seed 0
 출력: OUT_DIR/imgs/*.png, OUT_DIR/train.jsonl·val.jsonl — 줄마다 {"image", "prompt", "answer", "qtype", "meta"}(image 는 OUT_DIR 기준)."""
 from __future__ import annotations
 
@@ -31,6 +32,11 @@ PARAPHRASES = {
     "chart_high": ["그래프에서 가장 높은 값이 나타난 때나 항목은 무엇인가요?", "이 그림에서 값이 제일 큰 것은 어느 때나 항목인가요?"],
     "chart_low": ["그래프에서 가장 낮은 값이 나타난 때나 항목은 무엇인가요?", "이 그림에서 값이 제일 작은 것은 어느 때나 항목인가요?"],
     "chart_trend": ["그래프의 값은 전체적으로 어떻게 변하나요?", "이 그래프 값의 큰 흐름은 무엇인가요?"],
+    "flow_first": ["이 절차는 어떤 단계로 시작하나요?", "흐름도의 맨 처음 단계는 무엇인가요?"],
+    "flow_last": ["이 절차의 마지막 단계는 무엇인가요?", "흐름도는 어떤 단계로 끝나나요?"],
+    "flow_next": ["흐름도에서 '{x}' 다음에 오는 단계는 무엇인가요?", "'{x}' 단계를 마치면 바로 이어지는 단계는 무엇인가요?"],
+    "org_top": ["이 조직도의 가장 위에 있는 조직은 무엇인가요?", "체계도의 맨 위 상자는 무엇인가요?"],
+    "org_parent": ["조직도에서 '{x}' 의 바로 위 조직은 무엇인가요?", "'{x}' 는 어느 조직 바로 아래에 있나요?"],
 }
 
 # ---------------------------------------------------------------- 이름·값
@@ -455,18 +461,213 @@ def make_map(rng: random.Random, np_rng, path: Path, plt, style: str) -> dict | 
             "caption": caption, "text": ocr(rng, ([title] if title_inside else []) + texts)}
 
 
+# ---------------------------------------------------------------- 흐름도·조직도
+
+
+STEPS = ["신청", "접수", "서류 검토", "요건 확인", "현장 조사", "심사", "심의", "승인", "결과 통보", "계약 체결", "사업 착수",
+         "중간 점검", "최종 평가", "보조금 지급", "공고", "대상자 선정", "협약 체결", "교육 실시", "모니터링", "결과 보고", "예산 배정",
+         "집행", "정산", "사후 관리", "등록", "증명서 발급", "상담", "진단", "조치", "이행 확인", "의견 수렴", "계획 수립", "추천", "검증", "공개"]
+ACTORS = ["(신청인)", "(시·군·구)", "(시·도)", "(본부)", "(위원회)", "(사업단)", "(전문기관)"]
+DECIDE = ["적합 여부", "요건 충족?", "보완 필요?", "기준 통과?"]
+SIDE = ["보완 요청", "반려", "재검토", "보완 제출"]           # 갈림의 '아니오' 쪽 — STEPS 와 겹치지 않는다
+CIRCLED = "①②③④⑤⑥⑦⑧"
+TOPICS = ["기후", "안전", "복지", "산업", "교통", "환경", "보건", "문화", "교육", "재난", "정보", "농업", "해양", "에너지", "디지털", "주거", "고용"]
+QUAL = ["", "", "정책", "지원", "기획", "운영", "관리", "혁신"]
+ORG_SUFFIX = (["부", "청", "원", "처", "본부", "추진단", "위원회"], ["실", "국", "정책관", "본부", "센터", "단"], ["과", "팀", "담당관", "센터"])
+UNIT_IN = 0.75                # 그림 1 단위 = 0.75 인치 — 글자 크기로 상자 너비를 잰다
+PASTEL = ["#dbe8f7", "#e3f1e0", "#fdebd3", "#efe3f6", "#fbe0e0", "#e0f2f4", "#f2f2f2"]
+DARK = ["#2f5f98", "#2e7d4f", "#b0611f", "#6b4a8e", "#9b3434", "#2b7f8a", "#444444"]
+
+
+def _canvas(plt, rng, x0, x1, y0, y1):
+    """1 단위 = UNIT_IN 인치인 빈 그림 — 상자 너비를 글자 수로 정해도 글이 상자를 넘지 않는다."""
+    fig = plt.figure(figsize=((x1 - x0) * UNIT_IN, (y1 - y0) * UNIT_IN), dpi=rng.randint(100, 140))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    ax.axis("off")
+    return fig, ax
+
+
+def _box(ax, x, y, w, h, text, fs, face, edge, color="black", bold=False):
+    from matplotlib.patches import FancyBboxPatch
+    ax.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h, boxstyle="round,pad=0,rounding_size=0.1", fc=face, ec=edge, lw=1.2))
+    ax.text(x, y, text, ha="center", va="center", fontsize=fs, color=color, fontweight="bold" if bold else "normal")
+
+
+def _arrow(ax, pts, color, label=None, fs=8):
+    """꺾인 화살표 — pts 의 마지막 칸에 화살촉. label 은 첫 칸 가운데('예'·'아니오')."""
+    if len(pts) > 2:
+        ax.plot([p[0] for p in pts[:-1]], [p[1] for p in pts[:-1]], color=color, lw=1.3)
+    ax.annotate("", xy=pts[-1], xytext=pts[-2], arrowprops=dict(arrowstyle="-|>", color=color, lw=1.3, shrinkA=0, shrinkB=0))
+    if label:
+        (ax_, ay), (bx, by) = pts[0], pts[1]
+        ax.text((ax_ + bx) / 2 + 0.08, (ay + by) / 2 + 0.12, label, fontsize=fs, color=color)
+
+
+def make_flow(rng: random.Random, np_rng, path: Path, plt) -> dict:
+    """흐름도 — 단계 상자를 화살표로 잇는다. 가로 한 줄·세로 한 줄·줄 바꿈(줄마다 왼쪽→오른쪽), 번호(①·1.·STEP 1), 맡은 곳 줄,
+    예/아니오 갈림 마름모(아니오 쪽 곁 상자는 앞 단계로 되돌아간다). 정답은 주된 길의 단계 순서 — 번호·맡은 곳은 답에 넣지 않는다."""
+    from matplotlib.patches import Polygon
+    n = rng.randint(4, 8)
+    names = rng.sample(STEPS, n)
+    layout = rng.choice(["h", "v", "wrap"] if n <= 6 else ["v", "wrap"])
+    k = rng.randint(1, n - 2) if layout != "wrap" and rng.random() < 0.3 else -1      # names[k] 뒤에 갈림 마름모
+    numbering = rng.choice([None, None, "circle", "dot", "step"])
+    step_word = rng.choice(["STEP", "단계"])                          # 한 그림 안에서는 한 꼴로
+    actor = rng.random() < 0.3
+    fs = rng.choice([8, 9, 10])
+    cu = fs / 72 / UNIT_IN * 1.05                                     # 한글 한 글자 너비(단위)
+    nodes = []                                                        # (갈래, 상자 글 줄들, 답 이름)
+    for j, s in enumerate(names):
+        first = f"{CIRCLED[j]} {s}" if numbering == "circle" else f"{j + 1}. {s}" if numbering == "dot" else s
+        nodes.append(("step", [first] + ([rng.choice(ACTORS)] if actor else []), s))
+        if j == k:
+            nodes.append(("decide", [rng.choice(DECIDE)], None))
+    size = [(max(len(t) for t in lines) * cu + 0.5 + (0.6 if kind == "decide" else 0), 0.55 + 0.3 * (len(lines) - 1) + (0.35 if kind == "decide" else 0))
+            for kind, lines, _ in nodes]
+    per_row = len(nodes) if layout == "h" else 1 if layout == "v" else rng.randint(3, 4)
+    cw = max(w for w, _ in size) + 0.7
+    ch = max(h for _, h in size) + 0.75 + (0.3 if numbering == "step" else 0)
+    pos = [((t % per_row) * cw, -(t // per_row) * ch) for t in range(len(nodes))]
+    rows, cols = (len(nodes) - 1) // per_row + 1, min(per_row, len(nodes))
+    side = rng.choice(SIDE) if k >= 0 else None
+    title = f"{rng.choice(TOPICS)} {rng.choice(['신청 절차', '처리 흐름도', '추진 절차', '업무 흐름'])}"
+    title_inside = rng.random() < 0.35
+    x0, x1 = -cw / 2, (cols - 1) * cw + cw / 2 + (cw if side and layout == "v" else 0)
+    y0, y1 = -(rows - 1) * ch - ch / 2 - (ch if side and layout == "h" else 0), ch / 2 + (0.7 if title_inside else 0)
+    fig, ax = _canvas(plt, rng, x0, x1, y0, y1)
+    ci = rng.randrange(len(PASTEL))
+    face, edge, ac = PASTEL[ci], DARK[ci], rng.choice(["#555555", DARK[ci]])
+    items = [title] if title_inside else []
+    if title_inside:
+        ax.text((x0 + x1) / 2, y1 - 0.35, title, ha="center", va="center", fontsize=fs + 2, fontweight="bold")
+    j = 0
+    for t, ((kind, lines, _), (w, h), (x, y)) in enumerate(zip(nodes, size, pos)):
+        if kind == "step":
+            if numbering == "step":
+                tag = f"STEP {j + 1}" if step_word == "STEP" else f"{j + 1}단계"
+                ax.text(x, y + h / 2 + 0.17, tag, ha="center", va="center", fontsize=fs - 1, color=edge, fontweight="bold")
+                items.append(tag)
+            _box(ax, x, y, w, h, "\n".join(lines), fs, face, edge)
+            j += 1
+        else:
+            ax.add_patch(Polygon([(x - w / 2, y), (x, y + h / 2), (x + w / 2, y), (x, y - h / 2)], closed=True, fc="white", ec=edge, lw=1.2))
+            ax.text(x, y, lines[0], ha="center", va="center", fontsize=fs)
+        items += lines
+        if t + 1 < len(nodes):                                        # 다음 상자로
+            (w2, h2), (nx, ny) = size[t + 1], pos[t + 1]
+            yes = "예" if kind == "decide" else None
+            if ny == y:
+                _arrow(ax, [(x + w / 2, y), (nx - w2 / 2, ny)], ac, yes, fs - 1)
+            elif nx == x:
+                _arrow(ax, [(x, y - h / 2), (nx, ny + h2 / 2)], ac, yes, fs - 1)
+            else:                                                     # 줄 바꿈 — 아래로 내려와 다음 줄 첫 상자로
+                mid = (y - h / 2 + ny + h2 / 2) / 2
+                _arrow(ax, [(x, y - h / 2), (x, mid), (nx, mid), (nx, ny + h2 / 2)], ac)
+            if yes:
+                items.append("예")
+        if kind == "decide":                                          # 아니오 — 곁 상자, 앞 단계로 되돌아간다
+            sw = len(side) * cu + 0.5
+            px, py = pos[t - 1]
+            if layout == "h":
+                sx, sy = x, y - ch
+                _arrow(ax, [(x, y - h / 2), (sx, sy + 0.275)], ac, "아니오", fs - 1)
+                _arrow(ax, [(sx - sw / 2, sy), (px, sy), (px, py - size[t - 1][1] / 2)], ac)
+            else:
+                sx, sy = x + cw, y
+                _arrow(ax, [(x + w / 2, y), (sx - sw / 2, sy)], ac, "아니오", fs - 1)
+                _arrow(ax, [(sx, sy + 0.275), (sx, py), (px + size[t - 1][0] / 2, py)], ac)
+            _box(ax, sx, sy, sw, 0.55, side, fs, "white", edge)
+            items += ["아니오", side]
+    fig.savefig(path)
+    plt.close(fig)
+    nxt = {names[i]: names[i + 1] for i in range(n - 1) if i != k}   # 갈림 앞 단계의 '바로 다음' 은 마름모라 묻지 않는다
+    caption = title if (not title_inside or rng.random() < 0.6) else "(없음)"
+    return {"kind": "flow", "layout": layout, "steps": names, "first": names[0], "last": names[-1], "next": nxt, "decide": k >= 0,
+            "caption": caption, "text": ocr(rng, items)}
+
+
+def make_org(rng: random.Random, np_rng, path: Path, plt) -> dict:
+    """조직도 — 맨 위 상자, 그 아래 한 줄(2~5칸), 칸마다 아래로 쌓은 하위 상자(0~3, 60%). 곁 상자(자문 등, 점선)는 묻지 않는다.
+    정답은 선으로 이은 위아래."""
+    used: set[str] = set()
+
+    def names(level, n):
+        out = []
+        while len(out) < n:
+            s = rng.choice(TOPICS) + rng.choice(QUAL) + rng.choice(ORG_SUFFIX[level])
+            if s not in used:
+                used.add(s)
+                out.append(s)
+        return out
+
+    root = names(0, 1)[0]
+    l1 = names(1, rng.randint(2, 5))
+    deep = rng.random() < 0.6
+    kids = {p: names(2, rng.randint(0, 3)) if deep else [] for p in l1}
+    side = f"{rng.choice(TOPICS)}{rng.choice(['자문위원회', '협의회', '지원단'])}" if rng.random() < 0.3 else None
+    fs = rng.choice([8, 9, 10])
+    cu = fs / 72 / UNIT_IN * 1.05
+    wid = lambda s: len(s) * cu + 0.5  # noqa: E731
+    w2 = max([wid(c) for cs in kids.values() for c in cs] or [0])
+    cw = max(max(wid(p) for p in l1), w2 + 0.55) + 0.4
+    h, ch, ch2 = 0.55, 1.4, 0.85
+    cx = (len(l1) - 1) * cw / 2
+    depth = max(len(cs) for cs in kids.values())
+    title = rng.choice([f"{root} 조직도", f"{root} 추진 체계", "조직 및 기능"])
+    title_inside = rng.random() < 0.35
+    sw = wid(side) if side else 0
+    x0, x1 = -cw / 2, max((len(l1) - 1) * cw + cw / 2, cx + wid(root) / 2 + 1.2 + sw + 0.3)
+    y0, y1 = -ch - h / 2 - depth * ch2 - 0.4, h / 2 + 0.4 + (0.7 if title_inside else 0)
+    fig, ax = _canvas(plt, rng, x0, x1, y0, y1)
+    ci = rng.randrange(len(PASTEL))
+    lc = "#555555"
+    items = [title] if title_inside else []
+    if title_inside:
+        ax.text((x0 + x1) / 2, y1 - 0.35, title, ha="center", va="center", fontsize=fs + 2, fontweight="bold")
+    _box(ax, cx, 0, wid(root), h, root, fs, DARK[ci], DARK[ci], color="white", bold=True)
+    items.append(root)
+    if side:
+        sx = cx + wid(root) / 2 + 1.2 + sw / 2
+        ax.plot([cx + wid(root) / 2, sx - sw / 2], [0, 0], color=lc, lw=1.1, ls="--")
+        _box(ax, sx, 0, sw, h, side, fs, "white", DARK[ci])
+        items.append(side)
+    bus = -ch / 2
+    ax.plot([cx, cx], [-h / 2, bus], color=lc, lw=1.2)
+    ax.plot([0, (len(l1) - 1) * cw], [bus, bus], color=lc, lw=1.2)
+    for i, p in enumerate(l1):
+        x = i * cw
+        ax.plot([x, x], [bus, -ch + h / 2], color=lc, lw=1.2)
+        _box(ax, x, -ch, cw - 0.4, h, p, fs, PASTEL[ci], DARK[ci], bold=True)
+        if kids[p]:
+            spine = x - cw / 2 + 0.35
+            ys = [-ch - (j + 1) * ch2 for j in range(len(kids[p]))]
+            ax.plot([spine, spine], [-ch - h / 2, ys[-1]], color=lc, lw=1.0)
+            for c, y in zip(kids[p], ys):
+                ax.plot([spine, spine + 0.2], [y, y], color=lc, lw=1.0)
+                _box(ax, spine + 0.2 + w2 / 2, y, w2, h * 0.9, c, fs - 1, "white", DARK[ci])
+    items += l1 + [c for j in range(depth) for p in l1 if j < len(kids[p]) for c in [kids[p][j]]]
+    fig.savefig(path)
+    plt.close(fig)
+    parent = {p: root for p in l1} | {c: p for p in l1 for c in kids[p]}
+    caption = title if (not title_inside or rng.random() < 0.6) else "(없음)"
+    return {"kind": "org", "root": root, "parent": parent, "caption": caption, "text": ocr(rng, items)}
+
+
 # ---------------------------------------------------------------- 물음
 
 
 def questions(rng: random.Random, m: dict) -> list[dict]:
-    """그림 하나의 물음·정답 — 보기 물음은 보기 순서를 섞고 정답은 보기 번호, 단답은 그림에 적힌 이름."""
+    """그림 하나의 물음·정답 — 보기 물음은 보기 순서를 섞고 정답은 보기 번호, 단답은 그림에 적힌 이름(흐름도·조직도는 상자 글)."""
     out = []
 
-    def ask(qtype, answer_text):
+    def ask(qtype, answer_text, x=None):
         q0, opts = QUESTIONS[qtype]
         q = rng.choice(PARAPHRASES[qtype]) if rng.random() < PARAPHRASE else None
         if opts is None:
-            out.append({"qtype": qtype, "prompt": prompt(qtype, m["caption"], m["text"], question=q), "answer": answer_text})
+            out.append({"qtype": qtype, "prompt": prompt(qtype, m["caption"], m["text"], question=q, x=x), "answer": answer_text,
+                        **({"x": x} if x else {})})
         else:
             order = rng.sample(opts, len(opts))
             out.append({"qtype": qtype, "prompt": prompt(qtype, m["caption"], m["text"], order, question=q),
@@ -484,11 +685,21 @@ def questions(rng: random.Random, m: dict) -> list[dict]:
         if rng.random() < READ_SHARE:                                     # 읽기 — 가로축 첫 이름(늘 적혀 있다)
             out.append({"qtype": "chart_first", "prompt": prompt("chart_first", m["caption"], m["text"]),
                         "answer": m["labels"][0]})
-    else:
+    elif m["kind"] == "map":
         ask("map_high", m["d_hi"])
         ask("map_low", m["d_lo"])
         if m["unit_text"] and rng.random() < 2 * READ_SHARE:
             out.append({"qtype": "map_unit", "prompt": prompt("map_unit", m["caption"], m["text"]), "answer": m["unit"]})
+    elif m["kind"] == "flow":
+        ask("flow_first", m["first"])
+        if rng.random() < 0.7:
+            ask("flow_last", m["last"])
+        for x in rng.sample(sorted(m["next"]), min(2, len(m["next"]))):
+            ask("flow_next", m["next"][x], x)
+    else:
+        ask("org_top", m["root"])
+        for x in rng.sample(sorted(m["parent"]), min(2, len(m["parent"]))):
+            ask("org_parent", m["parent"][x], x)
     return out
 
 
@@ -497,6 +708,8 @@ def main(argv=None) -> None:
     ap.add_argument("out", type=Path)
     ap.add_argument("--charts", type=int, default=1000)
     ap.add_argument("--maps", type=int, default=1000)
+    ap.add_argument("--flows", type=int, default=500)
+    ap.add_argument("--orgs", type=int, default=500)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--font", default=None)
     a = ap.parse_args(argv)
@@ -512,7 +725,8 @@ def main(argv=None) -> None:
     plt.rcParams["font.family"] = font_manager.FontProperties(fname=font).get_name()
     plt.rcParams["axes.unicode_minus"] = False
     (a.out / "imgs").mkdir(parents=True, exist_ok=True)
-    jobs = [("c", i) for i in range(a.charts)] + [("m", i) for i in range(a.maps)]
+    jobs = [("c", i) for i in range(a.charts)] + [("m", i) for i in range(a.maps)] + \
+        [("f", i) for i in range(a.flows)] + [("o", i) for i in range(a.orgs)]
     n_img = n_skip = 0
     count = Counter()
     with open(a.out / "train.jsonl", "w", encoding="utf-8") as tr, open(a.out / "val.jsonl", "w", encoding="utf-8") as va:
@@ -522,7 +736,8 @@ def main(argv=None) -> None:
                 np_rng = np.random.default_rng(rng.randrange(2 ** 32))
                 rel = f"imgs/{kind}{i:05d}.png"
                 m = (make_chart(rng, np_rng, a.out / rel, plt) if kind == "c" else
-                     make_map(rng, np_rng, a.out / rel, plt, ("choropleth", "contour")[i % 2]))
+                     make_map(rng, np_rng, a.out / rel, plt, ("choropleth", "contour")[i % 2]) if kind == "m" else
+                     make_flow(rng, np_rng, a.out / rel, plt) if kind == "f" else make_org(rng, np_rng, a.out / rel, plt))
                 if m is not None:
                     break
                 n_skip += 1
@@ -533,7 +748,8 @@ def main(argv=None) -> None:
             for q in questions(rng, m):
                 f.write(json.dumps({"image": rel, **q, "meta": m}, ensure_ascii=False) + "\n")
             n_img += 1
-            count.update([m["mode"]] if kind == "c" else [m["style"], "가장 높은 곳 " + m["d_hi"]])
+            count.update([m["mode"]] if kind == "c" else [m["style"], "가장 높은 곳 " + m["d_hi"]] if kind == "m" else
+                         ["흐름도 " + m["layout"] + (" 갈림" if m["decide"] else "")] if kind == "f" else ["조직도"])
     print(f"그림 {n_img}장(다시 그린 것 {n_skip}) → {a.out}")
     print("갈래 수(쏠림 확인):", dict(sorted(count.items())))
 

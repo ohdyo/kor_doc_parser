@@ -11,14 +11,22 @@ HEAD = ("아래 그림을 보고 물음에 답하세요.\n그림 제목: {captio
         "물음: {q}\n{tail}")
 CHOICE_TAIL = "보기: {opts}\n보기 번호 하나만 답하세요."
 SHORT_TAIL = "그림에 적힌 이름(가로축 글자·항목 이름) 그대로 짧게 답하세요. 막대나 선이 여럿이면 그림 제목이 가리키는 주된 값으로 봅니다."
+DIAG_TAIL = "그림의 상자에 적힌 글 그대로 짧게 답하세요."
 READ_TAIL = "그림에 적힌 그대로 짧게 답하세요."
-QUESTIONS = {                         # 물음 갈래 → (물음, 보기 — None 이면 단답)
+QUESTIONS = {                         # 물음 갈래 → (물음, 보기 — None 이면 단답). '{x}' 는 그림의 상자 글 하나
     "map_high": ("이 지도에서 값이 가장 높은(많은) 곳은 지도의 어느 쪽인가요?", DIRS),
     "map_low": ("이 지도에서 값이 가장 낮은(적은) 곳은 지도의 어느 쪽인가요?", DIRS),
     "chart_high": ("이 그래프에서 값이 가장 큰 때나 항목은 무엇인가요?", None),
     "chart_low": ("이 그래프에서 값이 가장 작은 때나 항목은 무엇인가요?", None),
     "chart_trend": ("이 그래프에서 값의 전체 흐름은 어떤가요?", TREND),
+    "flow_first": ("이 흐름도에서 처음 단계는 무엇인가요?", None),
+    "flow_last": ("이 흐름도에서 마지막 단계는 무엇인가요?", None),
+    "flow_next": ("이 흐름도에서 '{x}' 바로 다음 단계는 무엇인가요?", None),
+    "org_top": ("이 조직도(체계도)에서 맨 위에 있는 것은 무엇인가요?", None),
+    "org_parent": ("이 조직도(체계도)에서 '{x}' 바로 위에 있는 것은 무엇인가요?", None),
 }
+DIAGRAM = ("flow_first", "flow_last", "flow_next", "org_top", "org_parent")   # 상자 글로 답하는 흐름도·조직도 물음(사용자 제안 2026-10-19)
+NEEDS_X = ("flow_next", "org_parent")
 READS = {                             # 읽기 물음(잊음 막기 — 그림에 적힌 글자를 그대로)
     "chart_maxval": "이 그래프의 막대 위에 적힌 값 가운데 가장 큰 숫자는 무엇인가요?",   # 축 눈금 숫자는 아니다
     "chart_first": "이 그래프 가로축의 첫 번째 이름은 무엇인가요?",
@@ -32,15 +40,18 @@ def figure_text(lines) -> str:
     return out or "(없음)"
 
 
-def prompt(qtype: str, caption: str, text: str, options: list[str] | None = None, question: str | None = None) -> str:
-    """물음 하나 — 보기 물음은 options(섞은 순서)를 1부터 번호 매겨 붙인다. question 을 주면 물음 글만 바꾼다(학습용 다른 표현)."""
+def prompt(qtype: str, caption: str, text: str, options: list[str] | None = None, question: str | None = None,
+           x: str | None = None) -> str:
+    """물음 하나 — 보기 물음은 options(섞은 순서)를 1부터 번호 매겨 붙인다. question 을 주면 물음 글만 바꾼다(학습용 다른 표현).
+    x 는 '{x}' 자리에 넣을 상자 글('X' 바로 다음 단계·바로 위)."""
     if qtype in READS:
         q, tail = question or READS[qtype], READ_TAIL
     else:
         q0, opts = QUESTIONS[qtype]
-        q = question or q0
+        assert x or qtype not in NEEDS_X, "이 물음은 상자 글 x 가 있어야 한다"
+        q = (question or q0).replace("{x}", x or "")
         if opts is None:
-            tail = SHORT_TAIL
+            tail = DIAG_TAIL if qtype in DIAGRAM else SHORT_TAIL
         else:
             options = options or opts
             assert sorted(options) == sorted(opts), "보기는 정해진 보기를 섞은 것이어야 한다"
