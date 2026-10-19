@@ -1,0 +1,50 @@
+# 그림 해석 학습 자료 준비용(기획서 7.10) — default.yaml 과 두 곳만 다르다: vlm_skip 에 non_figure(그림 밖 VLM 생략 — CPU 로 돌릴 수
+# 있게, 그림 크롭·그림 속 글자는 실제 파싱과 같다), describe 끔. 나머지는 default.yaml 을 고치면 여기도 같게(시험이 지킨다).
+# 동작 설정(설계 7장). 머신별 값은 configs/env.yaml.
+
+engine: paddle_vl
+paddle_vl:
+  pipeline_version: v1.6
+  paddlex_config: paddlex_vl16.yaml  # 이 파일 기준 상대 경로
+  max_new_tokens: 4096
+  use_ocr_for_image_block: true      # D14 — 그림(image) 속 글자는 읽는다
+  use_ocr_for_chart_block: true      # D14 — 그래프·지도(chart) 속 보이는 글자(축 이름·범례·지명·값)도 그림처럼 'OCR:' 로 읽는다. 표로 만들지 않는다
+  use_chart_recognition: false       # D14 — 그래프를 표로 읽기는 끈다: test2·test3 에서 지어낸 값·외국어 머리글(테스트_결과 6.5). 그래프·지도는 그림 파일로만 넘긴다
+  use_seal_recognition: false
+  page_batch: 32                     # predict_iter 한 번에 넣는 쪽 수
+  vlm_skip: [logo, text_layer, non_figure]   # 학습 자료 준비 — 그림(image·chart) 밖은 VLM 생략. 훅 C — 로고·PDF 글자가 덮는 글 블록은 VLM 생략(text_layer 는 prefer 일 때만, 쪽마다 검증 표본 3개)
+
+render: { dpi: 144, max_pixels: 178956970 }
+nup: { enabled: true }
+orientation: scan_only               # off | scan_only
+text_layer: { mode: "prefer" }       # off | prefer (D13) — M2 에서 test.pdf 로 확인(2026-10-15)
+
+classify:
+  page_drop_min_score: 0.9
+  aside_keep_min_sentences: 2
+  footnote: keep                     # D11
+  form_blank: keep_flag              # D2
+
+meta:
+  promote: [title, issuer, doc_no, date]   # D3
+  promote_person_fields: false             # D15
+
+qc:
+  min_text_layer_agreement: 0.9
+  max_drop_char_ratio: 0.4
+  max_repeat_ngram_ratio: 0.05
+  max_unsupported_char_ratio: 0.02
+  max_block_errors: 0
+
+batch:
+  stop_after_consecutive_failures: 20
+  doc_retries: 1
+
+output: { write_markdown: true, write_jsonl: true, save_images: true, keep_raw: true }
+
+describe:                            # D19 — 그림과 글자를 함께 봐야 하는 그림(그림 갈래 image)을 범용 VLM 이 한국어 몇 문장으로 설명
+  enabled: false                     # 학습 자료 준비에는 설명이 필요 없다. env.yaml 의 describer.server_url 에 설명 서버가 있어야 한다(없는 컴퓨터에서는 false 로)
+  model: skt/A.X-4.0-VL-Light        # 국내 모델(SK텔레콤, Apache-2.0) — 비교: dnotitia/DNA3.0-4B·9B. 설명 서버가 올린 이름과 같게
+  max_tokens: 512
+  min_area: 0.01                     # 논리 페이지 넓이 대비 — 이보다 작은 그림(아이콘)은 설명하지 않는다
+  min_logprob: -0.30                 # 문장 토큰 평균 로그확률이 이보다 낮으면 뺀다 — A.X 로 잼(테스트_결과 10장). 모델을 바꾸면 다시 잰다

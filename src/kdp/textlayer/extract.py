@@ -308,8 +308,10 @@ def _vlm_text(b: Block) -> str:
     return b.text or b.figure_text or htmllib.unescape(re.sub(r"<[^>]+>", " ", b.html or ""))
 
 
-def apply_text_layer(doc: Document, layers: dict[int, list[dict]], info: PdfInfo, prefer: bool) -> Document:
-    """쪽마다 born_digital·레이어 일치율을 적고, prefer 면 맞는 블록의 글자를 레이어 글자로 바꾼다."""
+def apply_text_layer(doc: Document, layers: dict[int, list[dict]], info: PdfInfo, prefer: bool, trust: bool = False) -> Document:
+    """쪽마다 born_digital·레이어 일치율을 적고, prefer 면 맞는 블록의 글자를 레이어 글자로 바꾼다. trust 는 그림만 설정(vlm_skip 의
+    non_figure — 그림 해석 학습 자료 준비, 기획서 7.10)용: 글 블록을 모두 건너뛰어 일치율을 잴 검증 표본이 없는 born_digital 쪽도
+    레이어로 채운다(블록마다 plausible 검사는 그대로)."""
     doc = doc.model_copy(deep=True)
     geo = {p.sheet_no: p for p in info.pages}
     for page in doc.pages:
@@ -336,6 +338,7 @@ def apply_text_layer(doc: Document, layers: dict[int, list[dict]], info: PdfInfo
             if 2 * len(bare) <= sum(b.type in TEXT_LABELS for b in targets):  # 글 블록 절반 이상이 글자층인 쪽만 — 스캔 쪽에 머리말만 글자인 쪽은 아니다
                 for b in bare:
                     b.provenance = (b.provenance or []) + [{"rule": "no_layer_chars"}]
+        read = None
         if skipped:                                                 # 훅 C: 일치율은 VLM 이 읽은 글 블록(검증 표본)으로만 — 표는 뺀다
             read = [b for b in targets if b.type in TEXT_LABELS and not _skipped(b)]
             layer = "".join(chars[i][0] for b in read for i in owned[b.id] if not chars[i][2])
@@ -343,7 +346,8 @@ def apply_text_layer(doc: Document, layers: dict[int, list[dict]], info: PdfInfo
         else:
             layer, vlm = "".join(c[0] for c in chars if not c[2]), " ".join(_vlm_text(b) for b in blocks)
         page.text_layer_agreement = round(layer_recall(layer, vlm), 4) if page.born_digital and layer else None
-        if not prefer or not page.text_layer_agreement or page.text_layer_agreement < MIN_AGREEMENT:
+        unverified = trust and prefer and page.born_digital and bool(skipped) and not read   # 그림만 설정 — 표본 없이 레이어를 믿는다
+        if not unverified and (not prefer or not page.text_layer_agreement or page.text_layer_agreement < MIN_AGREEMENT):
             for b in skipped:                                       # 글자가 없는 채로 남는다 — 레이어를 끄고 다시 처리해야 한다
                 b.error = "VLM 을 건너뛴 블록인데 텍스트 레이어를 믿을 수 없다 — text_layer.mode off 로 다시 처리"
             continue

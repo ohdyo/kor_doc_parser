@@ -178,7 +178,8 @@ def _finish(info: PdfInfo, raws, doc_dir: Path, settings: Settings) -> Document:
         ),
         pages=[to_page(r) for r in raws],
     )
-    doc = apply_text_layer(doc, _layers(doc_dir, info), info, prefer=settings.parse.text_layer.mode == "prefer")
+    doc = apply_text_layer(doc, _layers(doc_dir, info), info, prefer=settings.parse.text_layer.mode == "prefer",
+                           trust="non_figure" in settings.parse.paddle_vl.vlm_skip)
     doc.source.born_digital = all(p.born_digital for p in doc.pages)
     doc = normalize(doc)
     doc = classify_blocks(doc, settings.parse.classify)

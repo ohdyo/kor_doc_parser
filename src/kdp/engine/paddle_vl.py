@@ -215,7 +215,7 @@ class PaddleVLEngine:
             if len(seen) >= MIN_PAGE_CHARS and len(seen) >= 0.5 * len(real) and plausible("".join(c["c"] for c, _ in seen)):
                 (ox, oy), s = inp.origin, inp.scale
                 chars = [(((l - ox) * s, (t - oy) * s, (r - ox) * s, (b - oy) * s), c["c"]) for c, (l, t, r, b) in seen]
-        return SkipPlan("logo" in self._skip(), chars)
+        return SkipPlan("logo" in self._skip(), chars, "non_figure" in self._skip())
 
     def _run_batch(self, batch, raw_dir: Path):
         images = [img for img, _ in batch]          # 반드시 list — 튜플·제너레이터는 결과가 0건이다

@@ -39,3 +39,15 @@ def test_partial_override_keeps_default_paddlex_config(tmp_path):
     s = load_settings(parse_path=f)
     assert s.parse.render.dpi == 200
     assert s.paddlex_config_path == (DEFAULT_PARSE.parent / "paddlex_vl16.yaml").resolve()
+
+
+def test_figures_only_config_differs_from_default_in_two_places():
+    """그림 해석 학습 자료 준비용 설정(기획서 7.10) — 그림 쪽 처리가 실제 파싱과 같으려면 default.yaml 과 두 곳만 달라야 한다."""
+    import yaml
+
+    base = yaml.safe_load(DEFAULT_PARSE.read_text(encoding="utf-8"))
+    fig = yaml.safe_load((DEFAULT_PARSE.parent / "figures_only.yaml").read_text(encoding="utf-8"))
+    assert fig["paddle_vl"].pop("vlm_skip") == base["paddle_vl"].pop("vlm_skip") + ["non_figure"]
+    assert fig["describe"].pop("enabled") is False and base["describe"].pop("enabled") is True
+    assert fig == base
+    assert load_settings(parse_path=DEFAULT_PARSE.parent / "figures_only.yaml").parse.paddle_vl.vlm_skip[-1] == "non_figure"

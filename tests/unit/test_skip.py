@@ -112,3 +112,17 @@ def test_ink_without_layer_chars_is_not_skipped():
     plan = SkipPlan(False, chars)
     assert plan.choose(blocks) == {2: "text_layer"}
     assert plan.choose(blocks, img) == {}                            # 레이어에 없는 두 글자(채운 입력란 값)의 잉크가 있다
+
+
+def test_non_figure_skips_everything_but_figures():
+    """그림만 설정(학습 자료 준비) — 그림(image·chart)만 VLM 에 남기고, 글 블록은 쪽에 레이어가 있으면 text_layer(조립이 레이어로
+    채운다), 표·그 밖은 non_figure. 기본(없음)은 그대로."""
+    chars = _line(100, 100, 30) + _line(100, 200, 25) + _line(100, 300, 20)
+    blocks = [_blk((95, 95, 705, 125)), _blk((95, 195, 605, 225)), _blk((95, 295, 505, 325)),
+              _blk((0, 400, 700, 600), "table"), _blk((0, 650, 300, 900), "chart"), _blk((400, 650, 700, 900), "image"),
+              {"label": "text", "box": (0, 0, 1, 1), "img": None}]
+    skip = SkipPlan(False, chars, non_figure=True).choose(blocks)
+    assert skip == {0: "text_layer", 1: "text_layer", 2: "text_layer", 3: "non_figure"}   # 검증 표본까지 — 그림만 VLM
+    assert SkipPlan(False, None, non_figure=True).choose(blocks[:4]) == {0: "non_figure", 1: "non_figure", 2: "non_figure",
+                                                                          3: "non_figure"}   # 레이어 없는 쪽은 비운다
+    assert 3 not in SkipPlan(False, chars).choose(blocks)                                        # 기본은 표를 읽는다

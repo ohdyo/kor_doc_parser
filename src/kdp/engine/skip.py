@@ -74,11 +74,22 @@ def _unexplained(box, inside, gray) -> bool:
 
 
 class SkipPlan:
-    def __init__(self, logos: bool, chars: list[tuple[tuple[float, float, float, float], str]] | None):
+    def __init__(self, logos: bool, chars: list[tuple[tuple[float, float, float, float], str]] | None, non_figure: bool = False):
         self.logos = logos
         self.chars = chars                    # 보이는 레이어 글자 (상자(그 쪽 이미지 px), 글자). None 이면 레이어로 건너뛰지 않는다
+        self.non_figure = non_figure          # 그림(image·chart) 밖은 모두 건너뛴다 — 학습 자료 준비용, 그림 쪽 처리는 그대로
 
     def choose(self, blocks: list[dict], image=None) -> dict[int, str]:
+        """건너뛸 블록 {블록 순번: 이유}. non_figure 면 그림 밖 블록을 모두 더한다 — 글 블록은 쪽에 레이어가 있으면 'text_layer'(조립이
+        레이어로 채워 그림 제목·앞뒤 글이 남는다), 나머지(표 등)는 'non_figure'(비운다)."""
+        skip = self._choose(blocks, image)
+        if self.non_figure:
+            for j, blk in enumerate(blocks):
+                if blk.get("img") is not None and j not in skip and blk["label"] not in ("image", "chart"):
+                    skip[j] = "text_layer" if self.chars and blk["label"] in TEXT_LABELS else "non_figure"
+        return skip
+
+    def _choose(self, blocks: list[dict], image=None) -> dict[int, str]:
         """건너뛸 블록 {블록 순번: 이유}. image(그 쪽 그림)가 있으면 레이어로 설명되지 않는 잉크가 있는 블록은 남긴다."""
         gray = image.mean(axis=2) if image is not None and image.ndim == 3 else image
         skip, cands = {}, []

@@ -79,7 +79,8 @@ class PaddleVL(_Cfg):
     use_chart_recognition: bool = False   # D14 — 그래프 표 읽기는 지어낸 값을 냈다(테스트_결과 6.5)
     use_seal_recognition: bool = False
     page_batch: int = 32
-    vlm_skip: list[Literal["logo", "text_layer"]] = Field(default_factory=lambda: ["logo", "text_layer"])   # 훅 C
+    vlm_skip: list[Literal["logo", "text_layer", "non_figure"]] = Field(default_factory=lambda: ["logo", "text_layer"])   # 훅 C
+    # non_figure: 그림(image·chart) 밖은 VLM 을 건너뛴다 — 그림 해석 학습 자료 준비용(configs/parse/figures_only.yaml, 기획서 7.10)
 
 
 class Render(_Cfg):
