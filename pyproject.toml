@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8", "reportlab>=4", "jsonschema>=4", "fonttools>=4"]
 compare = ["docling==2.138.0"]          # 비교군(eval/compare.py) — 파서 env 와 다른 env 에 설치(설계 9장)
+tune = ["matplotlib>=3.8"]              # 그림 해석 튜닝의 합성 그래프·지도(data/synth/figures.py, 기획서 7.10)
 
 [project.scripts]
 kdp = "kdp.cli:app"

@@ -20,10 +20,11 @@ else                                               # 드라이버 580 미만(202
   # PyPI 의 torchcodec 0.17.0 은 CUDA 13(libnvrtc.so.13) 빌드라 vLLM 이 뜨다 멈춘다 — 영상·소리는 안 쓰므로 CPU 판으로(cu129 판은 0.16 까지)
   VIRTUAL_ENV="$ENVS/kdp-serve" uv pip install --reinstall --no-deps "torchcodec==0.17.0+cpu" --index-url https://download.pytorch.org/whl/cpu
 fi
+VIRTUAL_ENV="$ENVS/kdp-serve" uv pip install "peft==0.20.0" pyyaml   # 그림 해석 튜닝(D20 — 기획서 7.10)의 LoRA 학습·서빙(--adapter)
 uv venv "$ENVS/kdp-paddle" --python 3.12
 VIRTUAL_ENV="$ENVS/kdp-paddle" uv pip install pip
 "$ENVS/kdp-paddle/bin/python" -m pip install -q paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
-cd "$ROOT" && VIRTUAL_ENV="$ENVS/kdp-paddle" uv pip install -e ".[test]"
+cd "$ROOT" && VIRTUAL_ENV="$ENVS/kdp-paddle" uv pip install -e ".[test,tune]"   # tune — 합성 그래프·지도(data/synth/figures.py)
 cp "$ROOT/gpu_server/env.gpu.yaml" "$ROOT/configs/env.yaml"                # 서버용 설정(GPU·vLLM 서버)
 "$ENVS/kdp-serve/bin/python" -c "import vllm, torch; print('kdp-serve', vllm.__version__, torch.__version__, torch.cuda.is_available())"
 "$ENVS/kdp-paddle/bin/python" -c "import paddle, paddleocr, paddlex; print('kdp-paddle', paddle.__version__, paddleocr.__version__, paddlex.__version__, paddle.device.is_compiled_with_cuda())" 2>/dev/null

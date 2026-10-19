@@ -1,6 +1,6 @@
 """그림 설명 VLM(D19)을 transformers 로 띄우는 OpenAI 호환 서버 — vLLM 0.31 에 없는 모델(SK텔레콤 A.X-4.0-VL-Light)용.
 파서(src/kdp/figure_desc.py)가 보내는 꼴만 받는다: 사용자 메시지 하나(그림 한 장 data URL + 글), temperature 0(탐욕 생성),
-max_tokens, chat_template_kwargs, logprobs·top_logprobs(설명 문장 검증이 '맞음'·'틀림' 확률을 본다). 요청은 하나씩 처리한다(문서
+max_tokens, chat_template_kwargs, logprobs·top_logprobs(설명 문장의 확신도, 그림 물음 평가의 답 확률). 요청은 하나씩 처리한다(문서
 하나에 그림 수십 장 규모). 127.0.0.1 에만 연다.
   tmux new -d -s desc "/workspace/envs/kdp-serve/bin/python /workspace/kor_doc_parser/gpu_server/serve_hf_vlm.py > /workspace/desc.log 2>&1"
 """
@@ -20,7 +20,9 @@ import transformers
 from PIL import Image
 
 
-def load(model_id: str, device: str):
+def load(model_id: str, device: str, adapter: str | None = None):
+    """(프로세서, 모델) — adapter 를 주면 그 LoRA(그림 해석 튜닝 D20, train/figdesc/train_lora.py)를 얹어 띄운다. 합치지 않는다 —
+    bf16 무게에 더하면 작은 변화가 반올림으로 사라진다(학습 끝 합성 검증도 합치지 않은 꼴로 잰다)."""
     import transformers.processing_utils as pu
 
     if not hasattr(pu, "_validate_images_text_input_order"):      # A.X 저장소 코드가 부르는 4.x 내부 함수(5.x 에서 빠짐) — 순서를 그대로 둔다
@@ -33,9 +35,14 @@ def load(model_id: str, device: str):
     auto = (getattr(cfg, "auto_map", None) or {})
     cls = transformers.AutoModelForCausalLM if "AutoModelForCausalLM" in auto else transformers.AutoModelForImageTextToText
     proc = transformers.AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-    model = cls.from_pretrained(model_id, config=cfg, trust_remote_code=True, dtype=torch.bfloat16).to(device).eval()
+    model = cls.from_pretrained(model_id, config=cfg, trust_remote_code=True, dtype=torch.bfloat16)
+    if adapter:
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, adapter)
+    model = model.to(device).eval()
     if cfg.model_type == "a.x-4-vl":
-        _patch_first_step(type(model))
+        _patch_first_step(type(model.get_base_model() if adapter else model))
     return proc, model
 
 
@@ -89,8 +96,9 @@ def main(argv=None) -> None:
     ap.add_argument("--port", type=int, default=8119)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--repetition-penalty", type=float, default=1.05)   # 모델 카드 권장값 — 탐욕 생성의 되풀이를 줄인다
+    ap.add_argument("--adapter", default=None, help="얹어 띄울 LoRA 폴더(그림 해석 튜닝 D20)")
     a = ap.parse_args(argv)
-    proc, model = load(a.model, a.device)
+    proc, model = load(a.model, a.device, a.adapter)
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
