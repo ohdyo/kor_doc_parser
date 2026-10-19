@@ -377,7 +377,8 @@ def evaluate(segs: dict, golden: dict, run: dict) -> dict:
             continue
         whole = _iou(cands[0]["bbox"], g["bbox"]) >= 0.5 or _inter(cands[0]["bbox"], g["bbox"]) >= COVER * _area(g["bbox"])
         list_ok += all(b.get("list_level") == g["level"] for b in (cands[:1] if whole else cands))
-    out = {"seconds": run.get("seconds"), "n_pages": len(golden["pages"]), "text": text, "leak": leak, "junk_removed": removed,
+    out = {"seconds": run.get("seconds"), "n_pages": len(golden["pages"]) or len(pages), "text": text, "leak": leak,  # 쪽 정답이 없는 그림 전용 정답은 출력 쪽 수
+           "junk_removed": removed,
            "tables": {"detected": det, "grid_ok": grid, "header_ok": head, "caption_ok": cap, "total": len(tables)},
            "figure_chars": fig_chars, "junk_text": junk_text,
            "headings": {"found": [found, len(heads)], "level_ok": [level_ok, found]}, "lists": {"level_ok": [list_ok, len(items)]}}

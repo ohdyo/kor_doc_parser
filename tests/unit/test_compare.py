@@ -247,6 +247,18 @@ def test_fact_words_match_whole_numbers_and_split_figure_pieces():
                                                             "filtered": 0}
 
 
+def test_figure_only_golden_without_pages():
+    """그림 해석 평가용 정답(test4·test5)은 쪽 정답이 없다 — 그림 지표는 그대로 내고, 쪽당 처리 시간은 출력 쪽 수로 나눈다."""
+    golden = {"pages": {}, "figures": [{"page": 1, "bbox": [0, 0, 100, 100], "kind": "chart", "route": "image",
+                                        "facts": [[["남서"], ["높"]]]}]}
+    run = {"seconds": 6.0, "pages": {"1": [{**cmp._blk("figure", [2, 2, 98, 98], True, "", "chart"), "route": "image",
+                                             "desc": "남서쪽이 가장 높다."}], "2": []}}
+    r = cmp.evaluate({}, golden, run)
+    assert r["n_pages"] == 2 and r["figure_desc"]["facts"] == [1, 1]
+    rows = {c[0]: c[1:] for c in ([x.strip() for x in line.strip("|").split("|")] for line in cmp.render({"a": r}).splitlines())}
+    assert rows["처리 시간(쪽당)"] == ["6초 (3.0초)"]
+
+
 def test_load_kdp_figure_route_and_description(tmp_path):
     blocks = [Block(id="p1.b01", type="chart", bbox=(50, 100, 500, 400), img_path="imgs/p1.b01.png", route="image",
                     route_reason="chart", figure_desc="남서쪽이 높다.",

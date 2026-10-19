@@ -1,12 +1,12 @@
 #!/bin/bash
-# 이 컴퓨터 → GPU 서버: 코드, 공개 시험 문서(test2·test3), 검출기 가중치, 비교군 결과(공개 문서만).
+# 이 컴퓨터 → GPU 서버: 코드, 공개 시험 문서(test2~test5), 검출기 가중치, 비교군 결과(공개 문서만).
 # 사용: bash gpu_server/push.sh <주소> <포트> [ssh 키]      — 코드를 고칠 때마다 다시 돌린다(서버 configs/env.yaml 은 두고)
 set -euo pipefail
 HOST=$1 PORT=$2 KEY=${3:-$HOME/.ssh/id_ed25519}
 cd "$(dirname "$0")/.."
 E="ssh -i $KEY -p $PORT -o StrictHostKeyChecking=accept-new"
 DEST=root@$HOST
-PUBLIC=(test2.pdf test3.pdf)                         # 서버에 올리는 PDF — 공개 정부 문서만, 이름으로
+PUBLIC=(test2.pdf test3.pdf test4.pdf test5.pdf)     # 서버에 올리는 PDF — 공개 정부 문서만, 이름으로
 $E "$DEST" 'mkdir -p /workspace/kor_doc_parser /root/.paddlex/official_models'
 rsync -az -e "$E" --exclude .git --exclude out --exclude out_gpu --exclude datasets --exclude runs --exclude '*.pdf' --exclude '*.PDF' \
   --exclude configs/env.yaml --exclude __pycache__ --exclude '*.egg-info' --exclude .pytest_cache ./ "$DEST:/workspace/kor_doc_parser/"
