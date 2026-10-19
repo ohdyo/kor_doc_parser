@@ -11,7 +11,9 @@ os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 @pytest.fixture(scope="session")
 def settings():
-    return load_settings()
+    s = load_settings()
+    s.parse.describe.enabled = False      # 그림 설명(D19)은 켜는 시험만 가짜 VLM 으로 — 기본 설정이 켜도 다른 시험이 설명 서버를 부르지 않게
+    return s
 
 
 @pytest.fixture(scope="session", autouse=True)

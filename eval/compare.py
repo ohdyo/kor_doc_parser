@@ -212,8 +212,9 @@ def load_kdp(doc_dir: Path) -> dict:
                 blk["joined"] = True
             if b["type"] in FIGURE_LABELS:                 # 그림 갈래·그림 설명(D19)
                 blk["route"], blk["desc"] = b.get("route"), b.get("figure_desc") or ""
-                blk["desc_dropped"] = sum(len(pv.get("dropped") or []) for pv in b.get("provenance") or []
-                                          if pv.get("rule") == "figure_desc")
+                pvs = [pv for pv in b.get("provenance") or [] if pv.get("rule") == "figure_desc"]
+                blk["desc_dropped"] = sum(len(pv.get("dropped") or []) for pv in pvs)
+                blk["desc_filtered"] = sum(len(pv.get(k) or []) for pv in pvs for k in ("copied", "unsure"))
             pages[p["page_no"]].append(blk)
     return {"seconds": read_json(doc_dir / "raw" / "engine.json").get("seconds"), "pages": pages, "meta": d.get("meta") or {}}
 
@@ -434,9 +435,10 @@ def _has(word, sent: str) -> bool:
 
 def _figure_desc(pages: dict, figs: list[dict]) -> dict:
     """그림 갈래·그림 설명(D19) — 정답 그림 자리의 그림 블록이 모두 정답 갈래인가, 설명할 그림(사실을 적은 그림)에 설명이 있나,
-    정답 사실이 설명의 한 문장 안에 있나(사실 = 낱말 무리 목록, 무리마다 낱말 하나라도), 근거 검사로 버린 문장 수. 한 정답 그림을
+    정답 사실이 설명의 한 문장 안에 있나(사실 = 낱말 무리 목록, 무리마다 낱말 하나라도), 근거 검사로 버린 문장 수, 본문 옮김·확신
+    낮음으로 거른 문장 수. 한 정답 그림을
     엔진이 여럿으로 잡았으면(IoU 0.5 이상인 큰 조각과 정답 상자 안에 대부분 든 나머지 조각) 모두 그 그림이다."""
-    route = n_route = desc = n_desc = facts = n_facts = dropped = 0
+    route = n_route = desc = n_desc = facts = n_facts = dropped = filtered = 0
     for g in figs:
         hits = _fig_blocks(pages, g)
         hits += [b for b in pages.get(g["page"], []) if b["body"] and b["bbox"] and b["kind"] == "figure" and b not in hits
@@ -452,7 +454,9 @@ def _figure_desc(pages: dict, figs: list[dict]) -> dict:
             n_facts += len(g["facts"])
             facts += sum(any(all(any(_has(w, x) for w in group) for group in fact) for x in sents) for fact in g["facts"])
         dropped += sum(b.get("desc_dropped", 0) for b in hits)
-    return {"route_ok": [route, n_route], "described": [desc, n_desc], "facts": [facts, n_facts], "dropped": dropped}
+        filtered += sum(b.get("desc_filtered", 0) for b in hits)
+    return {"route_ok": [route, n_route], "described": [desc, n_desc], "facts": [facts, n_facts], "dropped": dropped,
+            "filtered": filtered}
 
 
 def _figure_text(pages: dict, entries: list[dict], segs: dict) -> dict:
@@ -516,7 +520,9 @@ def render(report: dict) -> str:
                  ("그림 설명 있음(설명할 그림)", lambda r: _frac(r["figure_desc"]["described"]) if "figure_desc" in r else "—"),
                  ("그림 설명에 든 정답 사실", lambda r: _frac(r["figure_desc"]["facts"]) if "figure_desc" in r else "—"),
                  ("그림 설명에서 버린 문장(근거 없는 숫자·이름)",
-                  lambda r: str(r["figure_desc"]["dropped"]) if "figure_desc" in r else "—")]
+                  lambda r: str(r["figure_desc"]["dropped"]) if "figure_desc" in r else "—"),
+                 ("그림 설명에서 거른 문장(본문 옮김·확신 낮음)",
+                  lambda r: str(r["figure_desc"].get("filtered", 0)) if "figure_desc" in r else "—")]
     if has("meta"):
         rows.append(("문서 정보 맞음(제목·기관·날짜)", lambda r: _frac(r["meta"]) if r.get("meta") else "—"))
     rows.append(("처리 시간(쪽당)", lambda r: f"{r['seconds']:.0f}초 ({r['seconds'] / r['n_pages']:.1f}초)"

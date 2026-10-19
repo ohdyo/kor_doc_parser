@@ -5,6 +5,7 @@ import hashlib
 import html as htmllib
 import json
 import re
+from typing import Callable, NamedTuple
 
 from ..classify.blocks import sentences
 from ..geometry import local, page_size
@@ -101,7 +102,7 @@ NUMERIC_MAX = 0.2             # 숫자 낱말 비율이 이보다 크면 그래�
 _HAN = re.compile(r"[가-힣]")
 _NUMWORD = re.compile(r"[\d.,%+\-–~℃°()/:]+")
 CONTEXT_CHARS = 300           # 물음에 넣는 그림 앞·뒤 본문 글자 수 — 앞뒤 글과 이어지는 설명을 쓰게(사용자 요청 2026-10-19)
-DESC_PROMPT = """아래는 한국어 문서의 한 부분이고, [그림] 자리에 그림이 있습니다. 그림을 보고, 그림이 보여 주는 내용을 이 문서의 본문 문장처럼 쓰세요. 앞뒤 글과 자연스럽게 이어져야 합니다.
+DESC_PROMPT = """아래는 한국어 문서의 한 부분이고, [그림] 자리에 그림이 있습니다. 그림을 보고, 그림에서 읽히는 내용을 이 문서의 본문 문장처럼 쓰세요. 앞뒤 글과 자연스럽게 이어져야 합니다.
 
 문서 구역: {section}
 앞 글: {before}
@@ -110,32 +111,51 @@ DESC_PROMPT = """아래는 한국어 문서의 한 부분이고, [그림] 자리
 뒤 글: {after}
 
 쓰는 법
-- 2~4문장, 이 문서처럼 '~다.'로 끝나는 문장으로 씁니다.
-- '이 그림은', '이 지도는', '위 그래프는'처럼 그림을 가리키며 시작하지 말고, 그림이 보여 주는 내용을 바로 씁니다. 범례·축·제목이 어디에 있는지 같은 그림의 생김새는 쓰지 않습니다.
+- 1~3문장, 이 문서처럼 '~다.'로 끝나는 문장으로 씁니다. 그림에서 분명히 보이는 것만 쓰고, 분명하지 않은 것은 쓰지 않습니다.
+- '이 그림은', '이 지도는', '위 그래프는'처럼 그림을 가리키며 시작하지 말고, 그림이 보여 주는 내용을 바로 씁니다. 범례·축·색이 어디에 있고 무엇을 뜻하는지 같은 그림 읽는 법은 쓰지 않습니다.
   나쁜 예: "이 그래프는 월별 방문객 수를 나타낸 그래프입니다."
   좋은 예: "월별 방문객은 3월부터 늘어 8월에 가장 많았고 겨울에는 줄었다."
-- 앞뒤 글을 되풀이하지 말고, 그림을 봐야 알 수 있는 내용(어디가 높고 낮은지, 어떻게 늘고 주는지, 무엇이 무엇으로 이어지는지, 색이 뜻하는 것)을 보탭니다.
-- 해·월·일·주 같은 때는 축을 보고 써도 됩니다. 값(기온·강수량·개수·비율 등)은 그림이나 앞뒤 글에 적힌 숫자만 그대로 쓰고, 눈금으로 어림한 값은 쓰지 않습니다.
+- 앞뒤 글의 문장을 옮겨 적지 말고, 그림을 봐야 알 수 있는 내용(어디가 높고 낮은지, 언제 늘고 줄었는지)을 씁니다. 장식·홍보 그림이라 보탤 내용이 없으면 '없음'이라고만 씁니다.
+- 선·막대마다 자료가 끝나는 때가 다를 수 있습니다. 자료가 끝난 뒤의 때는 쓰지 않습니다.
+- 범례의 눈금 숫자를 그림 속 값의 범위로 쓰지 않습니다.
+- 색은 범례가 재는 것에 맞게 읽습니다. 평년과의 차이(편차)를 나타낸 지도에서 덜 높은 곳은 '평년보다 덜 높다'이지 '낮다'가 아니고, 퍼센타일·순위 지도의 색은 많고 적음의 순위입니다.
+- 그림에 적힌 날짜·숫자·이름은 바꾸지 않고 그대로 씁니다. 값은 그림이나 앞뒤 글에 적힌 숫자만 쓰고, 눈금으로 어림한 값은 쓰지 않습니다.
 - 그림이나 앞뒤 글에 적히지 않은 지명·이름은 쓰지 말고 위치(북동쪽, 왼쪽 위 등)로 씁니다.
-- 그림에 없는 원인·평가·전망은 쓰지 않습니다."""
+- 원인과 결과는 그림이나 앞뒤 글에 적힌 방향 그대로만 씁니다. 적히지 않은 원인·평가·전망은 쓰지 않습니다."""
 _FIG_WORD = r"(?:그림|지도|그래프|사진|도식|모식도|차트|이미지|도표|포스터|일러스트)"
 _LEAD = re.compile(rf"^(?:(?:이|위|아래|본|해당|다음|두|왼쪽|오른쪽)\s*)?(?:막대\s*|선\s*)?{_FIG_WORD}"
                    r"(?:은|는|에서는|에서|에는|을\s*보면|를\s*보면)\s+")          # 그림을 가리키는 머리말('이 그림은')
 _DEPICT = re.compile(r"나타[내냅낸냈]|보여\s*[주줍준줬]|표시[하합한했]|표현[하합한했]|구분[하합한했]|담[고은습겨]")   # 그리는 말('나타냅니다'·'보여 준다')
 _INTRO_END = re.compile(rf"(?:나타낸|보여\s*주는|표시한|표현한|담은)\s*{_FIG_WORD}(?:이다|입니다)\s*[.]?$")   # '…를 나타낸 지도이다.'
 _FINDING = re.compile(r"가장|높|낮|많|적|늘|줄|증가|감소|상승|하락|오르|올라|내리|내려|이어|몰려|집중|밀집|최고|최저|최대|최소"
-                      r"|넘|초과|미만|이상|이하|비슷|차이|앞서|빠르|느리|진할수록|옅을수록|클수록|작을수록")   # 내용 낱말
+                      r"|넘|초과|미만|이상|이하|비슷|차이|앞서|빠르|느리|클수록|작을수록")   # 내용 낱말
+_READING = re.compile(r"(?:색|색상|색깔|점|선|막대|기호|화살표)\s*(?:으로|로)\s*(?:구분|표시|나타|표현)|(?:쉽게|한눈에)\s*(?:파악|확인|알|볼)\s*수"
+                      r"|(?:진할|옅을|짙을|밝을|어두울|연할)수록|(?:을|를)\s*(?:의미|뜻)한다")   # 그림 읽는 법('색이 진할수록 많음을 뜻한다' — 실측에서 거꾸로 읽음)
+_DEPICT_END = re.compile(r"(?:변화|분포|추이|모습|현황|흐름|양상|추세|구성|위치|관계|특징|모양|형태|구조)(?:를|을)\s*"
+                         rf"(?:{_DEPICT.pattern})[가-힣\s]{{0,6}}[.]?$")                    # '…의 변화를 보여준다.' — 주어 없는 소개 문장
 _LAYOUT = re.compile(r"(?:범례|나침반|축척|척도|눈금|색\s*막대|색상\s*막대|가로\s*축|세로\s*축|[xyXY]\s*축|그림\s*제목)"
                      r"[가-힣]{0,2}\s*(?:가|이|는|은|도|에는)?\s*(?:있|제공|표시되어|그려져|위치|붙어)")   # 그림 생김새 문장
 _SENT = re.compile(r"(?<=[.!?])\s+|\n+")
 _NUM = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
 _PLACE = re.compile(r"(?<![가-힣])[가-힣]{2,4}(?:시|군|구)(?=[이가은는을를의와과에도로만]|[^가-힣]|$)")   # 시·군·구 이름 꼴('강화군(7)이'·'파주시와')
 _NOT_PLACE = {"광역시", "대도시", "북반구", "남반구", "출입구", "비상구", "또다시"}   # 이름 꼴이지만 지명이 아니다
-_TIME = re.compile(r"(?:(\d{1,4})\s*[~∼〜\-–]\s*)?(\d{1,4})\s*(년도|년|분기|월|주차|주|일|시)(?!간)")   # 때·자리('6월 13일'·'2023~2025년'·'27주')
+_TIME = re.compile(r"(?:(\d{1,4})\s*[~∼〜\-–]\s*)?(\d{1,4})\s*(년도|년|분기|월|주차|주|일|시)"
+                   r"(?!간|\s*(?:동안|이상|이하|미만|초과|정도|가량|남짓|넘게|째|연속))")   # 때·자리('6월 13일'·'2023~2025년'·'27주') — 뒤에 '이상·동안' 이 오면 길이(값)
+_DATE = re.compile(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일((?:\s*(?:과|와|,|및|·|~|∼|부터|에서|-|–)\s*\d{1,2}\s*일)*)")   # '9월 26일과 27일'
+_MD = re.compile(r"(?<![\d.])(\d{1,2})\.\s?(\d{1,2})\.?(?![\d])")                  # '9.26' · '6.13.' — 월.일
+_DECADE = re.compile(r"((?:19|20)\d)0\s*년대\s*(초반|중반|후반|말|초|중)?")
+_DECADE_PART = {"초반": 0, "초": 0, "중반": 3, "중": 3, "후반": 7, "말": 7, None: 0}  # '2020년대 후반' 은 2027년부터
+_PERIOD = re.compile(r"((?:19|20)\d\d)\s*년?\s*\(\s*[^()]*?[~∼〜\-–]\s*(\d{1,2})\s*[./월]\s*\d{1,2}\s*[.일]?\s*\)")   # '2026년(1.1.~6.13.)' — 그 해 자료가 끝나는 달
+_MONTH = re.compile(r"(?<!\d)(\d{1,2})\s*월")
+_LINK = re.compile(r"이로\s*인해|이\s*때문에|이에\s*따라|그\s*결과|이로써|따라서")   # 앞 문장과 잇는 인과 — 근거에 없으면 모델이 지은 인과
+_SPECULATE = re.compile(r"(?:예상|전망|예측|우려)(?:된다|되며|되고|됩니다|한다|합니다|하고|되어)|[될할칠줄늘클갈올] 것(?:이다|입니다|으로)")   # 전망
+COPY_SHARE = 0.7              # 문장 글자 4개 묶음 가운데 이만큼 이상이 앞뒤 본문에 있으면(그림 글자보다 많이) 본문을 옮긴 문장
+SCALE_RUN = 5                 # 그림 글자에서 수가 이만큼 이상 한 방향으로 이어지면 범례·축 눈금
 _TIME_RANGE = {"월": (1, 12), "일": (1, 31), "주": (1, 53), "주차": (1, 53), "분기": (1, 4), "시": (0, 24)}
 _YEAR = re.compile(r"(?<!\d)(?:19|20|21)\d\d(?!\d)")
 _YY = re.compile(r"['‘’](\d{2})(?!\d)")                                 # "'23" — 두 자리 해
-_THINK = re.compile(r"<think>.*?</think>", re.S)
+_ITEM_NAME = re.compile(r"최[고저]\s*기온|최대\s*풍속|최소\s*습도|이상\s*고온|증가율|감소율")   # 내용 낱말을 품은 항목 이름 — 소개 문장 판단에서 뺀다
+_SENT_END = re.compile(r"다[.!?…'\"」』)\]]*$")                       # '~다.' 로 맺은 문장 — 그림 글자를 옮긴 조각('(1일) 정체전선 영향 비')은 아니다
 DESC_MAX_SENTENCES = 4        # 물음이 청한 문장 수 상한 — 되풀이로 길어진 응답을 자른다
 _FOREIGN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")   # 가나·한자
 _MARK = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+")                    # 모델이 붙인 글머리표·번호
@@ -231,13 +251,15 @@ def _num_key(m: str) -> str:
     return whole + ("." + frac if frac else "")
 
 
-def _reference(doc: Document, page: Page, b: Block) -> str:
-    """설명의 근거 — 그림 속 글자, 그림 제목, 그림 상자 안에 가운데가 든 살린 글 블록(글자층 글자가 있어 본문으로 둔 그림 속 글),
-    물음에 넣은 구역 이름과 앞뒤 글(문서에 적힌 값이라 지어낸 것이 아니다)."""
+def _reference(doc: Document, page: Page, b: Block) -> tuple[str, str]:
+    """설명의 근거 — (그림 쪽: 그림 속 글자, 그림 제목, 그림 상자 안에 가운데가 든 살린 글 블록(글자층 글자가 있어 본문으로 둔
+    그림 속 글), 구역 이름 / 앞뒤 글: 물음에 넣은 앞뒤 본문). 둘 다 문서에 적힌 값이라 지어낸 것이 아니다. 앞뒤 글은 본문을 옮겨
+    적은 문장을 가리는 데도 쓴다."""
     x0, y0, x1, y1 = b.bbox
     inner = [o.text for o in page.blocks if o is not b and o.keep and o.text and o.merged_into is None
              and x0 <= (o.bbox[0] + o.bbox[2]) / 2 <= x1 and y0 <= (o.bbox[1] + o.bbox[3]) / 2 <= y1]
-    return "\n".join(t for t in (b.figure_text, _caption(page, b), *inner, *(b.section_path or []), *_context(doc, b)) if t)
+    fig = "\n".join(t for t in (b.figure_text, _caption(page, b), *inner, *(b.section_path or [])) if t)
+    return fig, "\n".join(t for t in _context(doc, b) if t)
 
 
 def _position_ok(n: str, unit: str, years: set[int]) -> bool | None:
@@ -263,43 +285,162 @@ def _grounded(s: str, ref: str, flat: str, nums: set[str], years: set[int]) -> b
     return all(p in flat for p in _PLACE.findall(s) if p not in _NOT_PLACE) and all(ch in ref for ch in _FOREIGN.findall(s))
 
 
+def _days(ref: str) -> set[int]:
+    """근거에 적힌 날 — 'N일'·'25~26일' 의 두 끝, '9.26'·'6.13.' 의 일."""
+    return _written(ref, ("일",)) | {int(d) for mo, d in _MD.findall(ref) if 1 <= int(mo) <= 12 and 1 <= int(d) <= 31}
+
+
+def _written(ref: str, units: tuple[str, ...]) -> set[int]:
+    """근거에 그 단위로 적힌 때의 수('20주'·'25~26일' 의 두 끝)."""
+    return {int(m.group(g)) for m in _TIME.finditer(ref) if m.group(3) in units for g in (1, 2) if m.group(g)}
+
+
+def _values(s: str) -> set[str]:
+    """문장의 값(때·자리가 아닌 수)."""
+    pos = {m.start(g) for m in _TIME.finditer(s) for g in (1, 2) if m.group(g)}
+    return {_num_key(m.group()) for m in _NUM.finditer(s) if m.start() not in pos}
+
+
+def _scales(ref: str) -> list[tuple[str, str]]:
+    """그림 글자에서 수가 SCALE_RUN 개 이상 한 방향으로 이어진 곳(범례·축 눈금 '31 / 29.3 / … / 5') — 양 끝 수. 해 꼴 수(19xx·20xx)는
+    때라 끊는다."""
+    out, run = [], []
+    for tok in ref.split() + [""]:
+        m = re.fullmatch(r"([+\-−–]?)(\d+(?:\.\d+)?)(?:°C|℃|%|mm|일)?", tok)
+        if m and not _YEAR.fullmatch(m.group(2)):
+            run.append((float(m.group(2)) * (-1 if m.group(1) else 1), m.group(2)))
+            continue
+        i = 0
+        while i < len(run) - 1:                           # 한 방향으로 이어지는 가장 긴 조각들
+            j, up = i + 1, run[i + 1][0] > run[i][0]
+            while j + 1 < len(run) and run[j + 1][0] != run[j][0] and (run[j + 1][0] > run[j][0]) == up:
+                j += 1
+            if j - i + 1 >= SCALE_RUN and run[i][0] != run[i + 1][0]:
+                seg = run[i:j + 1]
+                out.append((_num_key(min(seg)[1]), _num_key(max(seg)[1])))
+            i = j
+        run = []
+    return out
+
+
+def _sensible(s: str, flat: str, days: set[int], weeks: set[int], years: set[int], periods: dict[int, int],
+              scales: list[tuple[str, str]]) -> bool:
+    """때·범위가 근거와 어긋나지 않나(실측 오류 — 테스트_결과 9.4·10장) — 날짜('9월 26일과 27일')는 근거에 적힌 날이나 1일·말일만,
+    주('2주차')는 근거에 주가 적혀 있으면 그 주만(축에 수만 적힌 그래프는 보지 않는다), '2020년대 후반' 은 근거의 해가 거기까지 있을
+    때만, 그림이 밝힌 자료 기간('2026년(1.1.~6.13.)') 뒤의 달은 안 되고, 범례·축 눈금의 양 끝을 값의 범위로 쓰지 않고('5°C에서
+    31°C 사이'), 전망('…것으로 예상된다')과 근거에 없는 인과 접속('이로 인해 찬 공기가 유입되었다' — 실측에서 지은 인과)은 쓰지
+    않는다."""
+    for m in _DATE.finditer(s):
+        for d in (int(x) for x in (m.group(2), *re.findall(r"(\d{1,2})\s*일", m.group(3)))):
+            if d not in days and d != 1 and not 28 <= d <= 31:
+                return False
+    if weeks and any(int(m.group(g)) not in weeks for m in _TIME.finditer(s) if m.group(3) in ("주", "주차")
+                     for g in (1, 2) if m.group(g)):
+        return False
+    for m in _DECADE.finditer(s):
+        if years and max(years) < int(m.group(1)) * 10 + _DECADE_PART[m.group(2)]:
+            return False
+    for y, end in periods.items():
+        if f"{y}년" in s and any(int(mo) > end for mo in _MONTH.findall(s)):
+            return False
+    vals = _values(s)
+    return not any(lo in vals and hi in vals for lo, hi in scales) and not _SPECULATE.search(s) \
+        and all("".join(m.group().split()) in flat for m in _LINK.finditer(s))
+
+
+def _grams(s: str) -> set[str]:
+    s = re.sub(r"[\W_]+", "", s)
+    return {s[i:i + 4] for i in range(len(s) - 3)}
+
+
 def _tidy(s: str) -> str | None:
-    """그림을 소개만 하는 문장('이 그래프는 … 변화를 나타냅니다' — 내용 낱말 없이 그리는 말로 맺음)과 생김새 문장('범례가 오른쪽에
-    있다')은 None, 그림을 가리키는 머리말은 뗀다('지도에서는 서쪽이 높다' → '서쪽이 높다') — 앞뒤 글과 이어지는 본문 문장으로."""
+    """그림을 소개만 하는 문장('이 그래프는 … 변화를 나타냅니다'·'…의 변화를 보여준다' — 내용 낱말 없이 그리는 말로 맺음),
+    생김새 문장('범례가 오른쪽에 있다'), 그림 읽는 법('진한 색일수록 많음을 뜻한다' — 실측에서 거꾸로 읽었다), '~다' 로 맺지 않은
+    조각(그림 글자를 옮긴 줄·영어로 샌 생각), 보탤 것이 없다는 답('없음')은 None, 그림을 가리키는 머리말은 뗀다('지도에서는 서쪽이
+    높다' → '서쪽이 높다') — 앞뒤 글과 이어지는 본문 문장으로."""
     lead = _LEAD.match(s)
     body = s[lead.end():] if lead else s
-    intro = lead and _DEPICT.search(body) or _INTRO_END.search(body)
-    if intro and not _FINDING.search(body) or _LAYOUT.search(s):
+    intro = lead and _DEPICT.search(body) or _INTRO_END.search(body) or _DEPICT_END.search(body)
+    if intro and not _FINDING.search(_ITEM_NAME.sub("", body)) or _LAYOUT.search(s) or _READING.search(s) or not _SENT_END.search(body) \
+            or body.strip(" .'\"") == "없다":
         return None
     return body
 
 
-def ground(text: str, ref: str, truncated: bool = False) -> tuple[list[str], list[str], list[str]]:
-    """설명 문장을 (남길 문장, 근거 없어 버린 문장, 그림 소개·생김새라 뺀 문장)으로 — 값(기온·강수량·개수 등 때·자리가 아닌 수)·
-    시군구 이름이 근거에 없거나, 때·자리 수가 말이 안 되거나('13월'), 근거에 없는 가나·한자가 섞인 문장은 버린다(그래프 표 읽기가
-    값을 지어낸 것과 같은 위험 — 테스트_결과 6.5). 생각 칸은 떼고, 같은 문장은 한 번만, 길이 한도로 잘렸으면 끝 문장도 버리고,
-    그림을 소개만 하는 문장은 빼고(_tidy), 남길 문장은 DESC_MAX_SENTENCES 개까지."""
-    lines = [_MARK.sub("", ln).replace("**", "").strip() for ln in _THINK.sub("", text or "").splitlines()]
+class Grounded(NamedTuple):
+    kept: list[str]           # 남길 문장
+    dropped: list[str]        # 근거 없음·말이 안 됨(값·지명·때·범례 눈금·전망)
+    meta: list[str]           # 그림 소개·생김새·그림 읽는 법·'없음'
+    copied: list[str]         # 앞뒤 본문을 옮겨 적은 문장
+    unsure: list[str]         # 모델이 확신하지 못한 문장(토큰 평균 로그확률이 min_logprob 아래)
+
+
+def sentence_logprob(text: str, logprobs: list | None) -> Callable[[str], float | None]:
+    """응답 기록의 토큰 확률([[토큰, 로그확률], …]) → 문장마다 그 문장에 걸친 토큰의 평균 로그확률. 기록에 확률이 없거나 문장을
+    응답에서 찾지 못하면 None(거르지 않는다)."""
+    if not logprobs:
+        return lambda s: None
+    joined, spans, pos = "", [], 0
+    for tok, lp in logprobs:
+        spans.append((pos, pos + len(tok), lp))
+        joined, pos = joined + tok, pos + len(tok)
+
+    def mean(s: str) -> float | None:
+        i = joined.rfind(s)                                   # 끝에서 — 생각 칸에 같은 문장을 먼저 써 볼 수 있다
+        if i < 0:
+            return None
+        lps = [lp for a, b, lp in spans if b > i and a < i + len(s)]
+        return sum(lps) / len(lps) if lps else None
+    return mean
+
+
+def _answer(text: str) -> str:
+    """생각 칸을 뗀 답 — 마지막 '</think>' 뒤(물음 틀이 여는 꼬리표를 넣어 닫는 꼬리표만 올 수 있다). 생각이 끝나지 않았으면 빈 답."""
+    text = text or ""
+    if "</think>" in text:
+        return text.rsplit("</think>", 1)[1]
+    return "" if "<think>" in text else text
+
+
+def ground(text: str, ref: str, truncated: bool = False, context: str = "",
+           conf: Callable[[str], float | None] | None = None, min_logprob: float | None = None) -> Grounded:
+    """설명 문장을 가른다(Grounded) — 값(기온·강수량·개수 등 때·자리가 아닌 수)·시군구 이름이 근거(그림 쪽 ref + 앞뒤 글 context)에
+    없거나, 때·자리 수가 말이 안 되거나('13월'), 근거에 없는 가나·한자가 섞이거나, 때·범위가 근거와 어긋나는(_sensible) 문장은
+    버린다(그래프 표 읽기가 값을 지어낸 것과 같은 위험 — 테스트_결과 6.5). 앞뒤 본문을 옮겨 적은 문장(4글자 묶음의 COPY_SHARE 이상이
+    앞뒤 글에 있고 그림 쪽보다 많음 — 본문에 이미 있다)과 모델이 확신하지 못한 문장(conf 가 min_logprob 아래 — 그림 해석을 지어낸
+    문장이 많다, 테스트_결과 10장)도 뺀다. 생각 칸은 떼고, 같은 문장은 한 번만, 길이 한도로 잘렸으면 끝 문장도 버리고, 그림을
+    소개만 하는 문장은 빼고(_tidy), 남길 문장은 DESC_MAX_SENTENCES 개까지."""
+    lines = [_MARK.sub("", ln).replace("**", "").strip() for ln in _answer(text).splitlines()]
     sents = list(dict.fromkeys(s.strip() for s in _SENT.split("\n".join(ln for ln in lines if ln)) if s.strip()))
     cut = [sents.pop()] if truncated and sents else []
-    flat = "".join(ref.split())
-    nums = {_num_key(m) for m in _NUM.findall(ref)}
-    years = {int(y) for y in _YEAR.findall(ref)} | {2000 + int(y) for y in _YY.findall(ref)}
-    kept, dropped, meta = [], [], []
+    full = ref + "\n" + context if context else ref
+    flat = "".join(full.split())
+    nums = {_num_key(m) for m in _NUM.findall(full)}
+    years = {int(y) for y in _YEAR.findall(full)} | {2000 + int(y) for y in _YY.findall(full)}
+    days, weeks, scales = _days(full), _written(full, ("주", "주차")), _scales(ref)
+    periods = {int(y): int(mo) for y, mo in _PERIOD.findall(full)}
+    ctx_grams, ref_grams = _grams(context), _grams(ref)
+    out = Grounded([], [], [], [], [])
     for s in sents:
         t = _tidy(s)
+        g = _grams(t) if t else set()
         if t is None:
-            meta.append(s)
-        elif _grounded(t, ref, flat, nums, years):
-            kept.append(t)
+            out.meta.append(s)
+        elif not (_grounded(t, full, flat, nums, years) and _sensible(t, flat, days, weeks, years, periods, scales)):
+            out.dropped.append(s)
+        elif g and len(g & ctx_grams) >= COPY_SHARE * len(g) and len(g & ctx_grams) > len(g & ref_grams):
+            out.copied.append(s)
+        elif min_logprob is not None and conf and (c := conf(s)) is not None and c < min_logprob:
+            out.unsure.append(s)
         else:
-            dropped.append(s)
-    return kept[:DESC_MAX_SENTENCES], dropped + cut, meta
+            out.kept.append(t)
+    return out._replace(kept=out.kept[:DESC_MAX_SENTENCES], dropped=out.dropped + cut)
 
 
 def attach_descriptions(doc: Document, cache: dict[str, dict], cfg) -> Document:
     """그림 설명(D19)을 붙인다 — 응답 기록(raw/describe.jsonl)에서 같은 열쇠를 찾아 근거 검사(ground)를 통과한 문장만
-    figure_desc 로, 버린 문장은 기록으로 남긴다. 응답이 없는 그림은 표시만 해 QC 가 센다(kdp describe 로 채운다)."""
+    figure_desc 로, 뺀 문장은 까닭별로(dropped·meta·copied·unsure) 기록에 남긴다. 응답이 없는 그림은 표시만 해 QC 가 센다(kdp
+    describe 로 채운다)."""
     if not cfg.enabled:
         return doc
     doc = doc.model_copy(deep=True)
@@ -308,8 +449,10 @@ def attach_descriptions(doc: Document, cache: dict[str, dict], cfg) -> Document:
         if hit is None:
             b.provenance = (b.provenance or []) + [{"rule": "figure_desc_missing"}]
             continue
-        kept, dropped, meta = ground(hit["text"], _reference(doc, page, b), hit.get("finish_reason") == "length")
-        b.figure_desc = " ".join(kept) or None
-        b.provenance = (b.provenance or []) + [{"rule": "figure_desc", "model": cfg.model, **({"dropped": dropped} if dropped else {}),
-                                                **({"meta": meta} if meta else {})}]
+        ref, ctx = _reference(doc, page, b)
+        g = ground(hit["text"], ref, hit.get("finish_reason") == "length", context=ctx,
+                   conf=sentence_logprob(hit["text"], hit.get("logprobs")), min_logprob=cfg.min_logprob)
+        b.figure_desc = " ".join(g.kept) or None
+        b.provenance = (b.provenance or []) + [{"rule": "figure_desc", "model": cfg.model,
+                                                **{k: v for k, v in g._asdict().items() if k != "kept" and v}}]
     return doc

@@ -1,6 +1,7 @@
 """그림 설명 VLM(D19)을 transformers 로 띄우는 OpenAI 호환 서버 — vLLM 0.31 에 없는 모델(SK텔레콤 A.X-4.0-VL-Light)용.
 파서(src/kdp/figure_desc.py)가 보내는 꼴만 받는다: 사용자 메시지 하나(그림 한 장 data URL + 글), temperature 0(탐욕 생성),
-max_tokens, chat_template_kwargs. 요청은 하나씩 처리한다(문서 하나에 그림 수십 장 규모). 127.0.0.1 에만 연다.
+max_tokens, chat_template_kwargs, logprobs·top_logprobs(설명 문장 검증이 '맞음'·'틀림' 확률을 본다). 요청은 하나씩 처리한다(문서
+하나에 그림 수십 장 규모). 127.0.0.1 에만 연다.
   tmux new -d -s desc "/workspace/envs/kdp-serve/bin/python /workspace/kor_doc_parser/gpu_server/serve_hf_vlm.py > /workspace/desc.log 2>&1"
 """
 from __future__ import annotations
@@ -56,19 +57,30 @@ def _patch_first_step(cls) -> None:
 
 
 def generate(proc, model, image: Image.Image, prompt: str, max_new_tokens: int, template_kwargs: dict,
-             repetition_penalty: float) -> tuple[str, str, int, int]:
+             repetition_penalty: float, top_logprobs: int | None = None) -> tuple[str, str, int, int, list | None]:
     messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}]
     text = proc.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **template_kwargs)
     inputs = proc(images=[image], text=[text], padding=True, return_tensors="pt").to(model.device, dtype=torch.bfloat16)
     with torch.inference_mode():
         out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False, use_cache=True,   # A.X 설정은 use_cache false — 켜지 않으면 글자마다 그림 토큰을 다시 계산한다
-                             repetition_penalty=repetition_penalty)
+                             repetition_penalty=repetition_penalty, return_dict_in_generate=True,
+                             output_logits=top_logprobs is not None)
     n_in = inputs["input_ids"].shape[1]
-    new = out[0, n_in:]
+    new = out.sequences[0, n_in:]
     eos = model.generation_config.eos_token_id
     eos = set(eos if isinstance(eos, (list, tuple)) else [eos])
     finish = "length" if len(new) >= max_new_tokens and int(new[-1]) not in eos else "stop"
-    return proc.batch_decode([new], skip_special_tokens=True)[0].strip(), finish, n_in, len(new)
+    lps = None
+    if top_logprobs is not None:                          # 되풀이 벌점을 매기기 전 값 — 물음에 든 '맞음'·'틀림' 이 깎이지 않게
+        tok = proc.tokenizer
+        lps = []
+        for i, logits in enumerate(out.logits):
+            lp = torch.log_softmax(logits[0].float(), dim=-1)
+            top = torch.topk(lp, max(1, top_logprobs))
+            lps.append({"token": tok.decode([int(new[i])]), "logprob": float(lp[int(new[i])]),
+                        "top_logprobs": [{"token": tok.decode([int(t)]), "logprob": float(v)}
+                                         for v, t in zip(top.values, top.indices)]})
+    return proc.batch_decode([new], skip_special_tokens=True)[0].strip(), finish, n_in, len(new), lps
 
 
 def main(argv=None) -> None:
@@ -107,14 +119,15 @@ def main(argv=None) -> None:
                 prompt = "\n".join(p["text"] for p in parts if p.get("type") == "text")
                 image = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))).convert("RGB")
                 max_new = int(body.get("max_tokens") or body.get("max_completion_tokens") or 512)
+                top_lp = int(body.get("top_logprobs") or 1) if body.get("logprobs") else None
             except (KeyError, StopIteration, ValueError, OSError) as e:
                 self._send(400, {"error": {"message": f"bad request: {e}"}})
                 return
             try:
                 with lock:
                     t0 = time.perf_counter()
-                    text, finish, n_in, n_out = generate(proc, model, image, prompt, max_new,
-                                                         body.get("chat_template_kwargs") or {}, a.repetition_penalty)
+                    text, finish, n_in, n_out, lps = generate(proc, model, image, prompt, max_new,
+                                                              body.get("chat_template_kwargs") or {}, a.repetition_penalty, top_lp)
                     took = round(time.perf_counter() - t0, 2)
             except Exception as e:                                # 그 그림만 실패 — 파서가 다음 실행에서 다시 부른다
                 traceback.print_exc()
@@ -122,7 +135,8 @@ def main(argv=None) -> None:
                 return
             self._send(200, {"id": "hf", "object": "chat.completion", "created": int(time.time()), "model": a.model,
                              "choices": [{"index": 0, "finish_reason": finish,
-                                          "message": {"role": "assistant", "content": text}}],
+                                          "message": {"role": "assistant", "content": text},
+                                          "logprobs": {"content": lps} if lps is not None else None}],
                              "usage": {"prompt_tokens": n_in, "completion_tokens": n_out, "total_tokens": n_in + n_out,
                                        "seconds": took}})
 

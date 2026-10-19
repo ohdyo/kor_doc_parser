@@ -125,6 +125,7 @@ class DescribeCfg(_Cfg):
     model: str = "skt/A.X-4.0-VL-Light"  # 국내 모델(SK텔레콤, Apache-2.0) — 설명 서버가 올린 이름과 같게
     max_tokens: int = 512
     min_area: float = 0.01               # 논리 페이지 넓이 대비 — 이보다 작은 그림(아이콘)은 설명하지 않는다
+    min_logprob: float | None = None     # 설명 문장 토큰의 평균 로그확률이 이보다 낮으면 뺀다(모델이 확신하지 못한 그림 해석) — 모델마다 잰다
 
 
 class OutputCfg(_Cfg):

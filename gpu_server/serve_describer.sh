@@ -8,9 +8,12 @@ export LC_ALL=C.UTF-8
 export VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1        # 사용 통계 전송을 끈다(설계 9장)
 export VLLM_USE_FLASHINFER_SAMPLER=0               # serve_vlm.sh 와 같은 까닭 — temperature 0 이라 필요 없다
 MODEL=${MODEL:-dnotitia/DNA3.0-4B}
+# DNA3.0-9B: UTIL=0.55(가중치 17.7GB + 계산 칸) — Qwen3.5 구조는 일부 층이 순환형이라 동시 요청마다 상태 칸이 하나씩 들어
+# 기본 동시 수(256)는 몫 0.55 에 들지 않는다(실측 246) → MAX_SEQS 32
 exec /workspace/envs/kdp-serve/bin/vllm serve "$MODEL" \
   --served-model-name "$MODEL" \
-  --gpu-memory-utilization 0.35 \
+  --gpu-memory-utilization "${UTIL:-0.35}" \
+  --max-num-seqs "${MAX_SEQS:-32}" \
   --max-model-len 8192 \
   --limit-mm-per-prompt '{"image":1,"video":0}' \
-  --host 127.0.0.1 --port 8119
+  --host 127.0.0.1 --port "${PORT:-8119}"

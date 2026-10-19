@@ -214,20 +214,22 @@ def test_figure_route_and_description():
          "facts": [[["남서", "서쪽"], ["높"]], [[0.5], ["넘", "초과"]], [["북동"], ["낮"]]]},
         {"page": 1, "bbox": [200, 0, 300, 100], "kind": "photo", "caption": None, "route": "image", "facts": [[["45"]]]},
         {"page": 1, "bbox": [400, 0, 500, 100], "kind": "poster", "caption": None}]}
-    def fig(bbox, route, desc="", dropped=0):
-        return {**cmp._blk("figure", bbox, True, "", "chart"), "route": route, "desc": desc, "desc_dropped": dropped}
+    def fig(bbox, route, desc="", dropped=0, filtered=0):
+        return {**cmp._blk("figure", bbox, True, "", "chart"), "route": route, "desc": desc, "desc_dropped": dropped,
+                "desc_filtered": filtered}
     run = {"pages": {"1": [
-        fig([2, 2, 98, 98], "image", "서쪽 지역이 가장 높다. 0.5 선을 넘은 곳이 많다. 북동쪽은 높다.", 2),   # 셋째는 다른 문장의 '낮'뿐
+        fig([2, 2, 98, 98], "image", "서쪽 지역이 가장 높다. 0.5 선을 넘은 곳이 많다. 북동쪽은 높다.", 2, 3),   # 셋째는 다른 문장의 '낮'뿐
         fig([200, 0, 245, 100], "image"), fig([255, 0, 300, 100], "text"),                         # 둘로 나눈 사진 — 하나가 틀림
         fig([400, 0, 500, 100], "image")]}}
     r = cmp.evaluate({}, golden, run)
-    assert r["figure_desc"] == {"route_ok": [1, 2], "described": [1, 2], "facts": [2, 4], "dropped": 2}
+    assert r["figure_desc"] == {"route_ok": [1, 2], "described": [1, 2], "facts": [2, 4], "dropped": 2, "filtered": 3}
     base = cmp.evaluate({}, golden, {"pages": {"1": [cmp._blk("figure", [2, 2, 98, 98], True, "", "chart")]}})
-    assert base["figure_desc"] == {"route_ok": [0, 2], "described": [0, 2], "facts": [0, 4], "dropped": 0}
+    assert base["figure_desc"] == {"route_ok": [0, 2], "described": [0, 2], "facts": [0, 4], "dropped": 0, "filtered": 0}
     rows = {c[0]: c[1:] for c in ([x.strip() for x in line.strip("|").split("|")]
                                   for line in cmp.render({"a": r, "b": base}).splitlines())}
     assert rows["그림 설명에 든 정답 사실"] == ["2/4 (50.0%)", "0/4 (0.0%)"]
     assert rows["그림 설명에서 버린 문장(근거 없는 숫자·이름)"] == ["2", "0"]
+    assert rows["그림 설명에서 거른 문장(본문 옮김·확신 낮음)"] == ["3", "0"]
 
 
 def test_fact_words_match_whole_numbers_and_split_figure_pieces():
@@ -241,13 +243,14 @@ def test_fact_words_match_whole_numbers_and_split_figure_pieces():
     run = {"pages": {"1": [
         {**cmp._blk("figure", [360, 352, 522, 436], True, "", "image"), "route": "image", "desc": "날개에 검은 반점이 있다."},
         {**cmp._blk("figure", [244, 352, 344, 436], True, "", "image"), "route": "image", "desc": "촉수가 주둥이 옆에 있다."}]}}
-    assert cmp.evaluate({}, golden, run)["figure_desc"] == {"route_ok": [1, 1], "described": [1, 1], "facts": [2, 2], "dropped": 0}
+    assert cmp.evaluate({}, golden, run)["figure_desc"] == {"route_ok": [1, 1], "described": [1, 1], "facts": [2, 2], "dropped": 0,
+                                                            "filtered": 0}
 
 
 def test_load_kdp_figure_route_and_description(tmp_path):
     blocks = [Block(id="p1.b01", type="chart", bbox=(50, 100, 500, 400), img_path="imgs/p1.b01.png", route="image",
                     route_reason="chart", figure_desc="남서쪽이 높다.",
-                    provenance=[{"rule": "figure_desc", "model": "m", "dropped": ["가.", "나."]}]),
+                    provenance=[{"rule": "figure_desc", "model": "m", "dropped": ["가.", "나."], "unsure": ["다."], "copied": ["라."]}]),
               Block(id="p1.b02", type="text", bbox=(50, 420, 500, 440), text="본문")]
     doc = Document(doc_id="sha256:ab", source=Source(paths=["a.pdf"], pages=1),
                    parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"),
@@ -255,7 +258,7 @@ def test_load_kdp_figure_route_and_description(tmp_path):
     write_json(tmp_path / "document.json", doc.model_dump(mode="json", exclude_none=True))
     write_json(tmp_path / "raw" / "engine.json", {"seconds": 1.0})
     a, b = cmp.load_kdp(tmp_path)["pages"][1]
-    assert (a["route"], a["desc"], a["desc_dropped"]) == ("image", "남서쪽이 높다.", 2) and "route" not in b
+    assert (a["route"], a["desc"], a["desc_dropped"], a["desc_filtered"]) == ("image", "남서쪽이 높다.", 2, 2) and "route" not in b
 
 
 def test_list_item_split_into_two_blocks():
