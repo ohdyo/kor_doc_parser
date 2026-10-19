@@ -1,5 +1,6 @@
 #!/bin/bash
-# 이 컴퓨터 → GPU 서버: 코드, 공개 시험 문서(test2~test5), 검출기 가중치, 비교군 결과(공개 문서만).
+# 이 컴퓨터 → GPU 서버: 코드, 공개 시험 문서(test2~test5), 그림 해석 튜닝의 시험·학습 PDF(tt_dt — 공공누리 공개 문서만, 기획서 7.10),
+# 검출기 가중치, 비교군 결과(공개 문서만).
 # 사용: bash gpu_server/push.sh <주소> <포트> [ssh 키]      — 코드를 고칠 때마다 다시 돌린다(서버 configs/env.yaml 은 두고)
 set -euo pipefail
 HOST=$1 PORT=$2 KEY=${3:-$HOME/.ssh/id_ed25519}
@@ -11,6 +12,13 @@ $E "$DEST" 'mkdir -p /workspace/kor_doc_parser /root/.paddlex/official_models'
 rsync -az -e "$E" --exclude .git --exclude out --exclude out_gpu --exclude datasets --exclude runs --exclude '*.pdf' --exclude '*.PDF' \
   --exclude configs/env.yaml --exclude __pycache__ --exclude '*.egg-info' --exclude .pytest_cache ./ "$DEST:/workspace/kor_doc_parser/"
 rsync -az -e "$E" "${PUBLIC[@]}" "$DEST:/workspace/kor_doc_parser/"
+TT=${TT_DT:-/hdd_data/raganything/tt_dt}             # 시험(pdf/)·학습(tr_dt/pdf/) PDF — 있으면 서버 /workspace/tt_dt 로
+for sub in pdf tr_dt/pdf; do
+  if [ -d "$TT/$sub" ]; then
+    $E "$DEST" "mkdir -p /workspace/tt_dt/$sub"
+    rsync -az -e "$E" --include '*.pdf' --exclude '*' "$TT/$sub/" "$DEST:/workspace/tt_dt/$sub/"
+  fi
+done
 rsync -az -e "$E" ~/.paddlex/official_models/PP-DocLayoutV3 ~/.paddlex/official_models/PP-LCNet_x1_0_doc_ori \
   "$DEST:/root/.paddlex/official_models/"
 for pdf in "${PUBLIC[@]}"; do                        # 비교군 결과(텍스트 레이어·docling·PaddleOCR-VL 기본) — 서버에서 다시 돌리지 않게
