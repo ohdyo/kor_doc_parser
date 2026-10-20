@@ -9,4 +9,9 @@ TT=${TT_DT:-/hdd_data/raganything/tt_dt}             # 그림 해석 튜닝 자�
 if ssh -i "$KEY" -p "$PORT" -o StrictHostKeyChecking=accept-new "root@$HOST" test -d /workspace/tt_dt/parsed; then
   rsync -az -e "ssh -i $KEY -p $PORT -o StrictHostKeyChecking=accept-new" "root@$HOST:/workspace/tt_dt/parsed/" "$TT/parsed/"
 fi
+for src in runs/ t1; do                               # 튜닝 결과(tune_t1.sh — 어댑터·학습 기록, 채점 답·파싱) → 이 컴퓨터 runs/(t1 은 runs/t1)
+  if ssh -i "$KEY" -p "$PORT" -o StrictHostKeyChecking=accept-new "root@$HOST" test -d "/workspace/${src%/}"; then
+    mkdir -p runs && rsync -az -e "ssh -i $KEY -p $PORT -o StrictHostKeyChecking=accept-new" "root@$HOST:/workspace/$src" runs/
+  fi
+done
 echo PULL_DONE

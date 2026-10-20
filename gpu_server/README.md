@@ -16,6 +16,7 @@
 | 서버 | `cd /workspace/kor_doc_parser && export PATH=/workspace/envs/kdp-paddle/bin:$PATH && kdp doctor` | 버전·가중치·VLM 서버 점검(모두 OK) | — |
 | 서버 | `kdp parse test2.pdf -o out` · `python eval/compare.py test2.pdf --golden eval/golden/test2_pdf.yaml` | 파싱·비교표 | — |
 | 서버 | `kdp describe out` | 그림 설명이 빠진 그림만 설명 VLM 에 보내고 다시 조립(설명 모델을 바꿨거나 설명 서버 없이 파싱한 문서) | — |
+| 서버 | `tmux new -d -s t1 "bash /workspace/kor_doc_parser/gpu_server/tune_t1.sh"` | 그림 해석 튜닝 1차 시범(D20 — 기획서 7.10) 한 번에: 원래 A.X 채점 물음·test2~5 파싱 → 50 step 시험 → 본 학습 → 튜닝 A.X 같은 물음·파싱 → 채점. 서버 둘은 스크립트가 띄우고 내리므로 먼저 띄우지 않는다. 진행은 `/workspace/t1/status.txt` | — |
 | 이 컴퓨터 | `bash gpu_server/pull.sh <주소> <포트>` | 서버 `out/` 을 이 컴퓨터 `out_gpu/` 로 가져온다 — 서버를 끄기 전에 | — |
 
 코드는 이 컴퓨터에서 고치고 `push.sh` 로 다시 보낸다(서버 `configs/env.yaml` 은 덮어쓰지 않는다). 서버에서 고친 것은 서버를 끄면 사라진다. 시험·파싱은 이 서버에서만 돌린다(사용자 지시 2026-10-18 — 이 컴퓨터 CPU 로는 너무 오래 걸린다).
