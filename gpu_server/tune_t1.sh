@@ -38,9 +38,11 @@ $P/python -m pytest -q tests/unit > $W/pytest.log 2>&1 &
 T=$!
 stage base || exit 1
 wait $T; mark "단위 시험 $? — $(tail -1 $W/pytest.log)"
-sed -e 's#/workspace/runs/figdesc_v1#/workspace/runs/figdesc_try#' -e 's/val_n: 200/val_n: 20/' configs/tune/figdesc_v1.yaml > $W/try.yaml
-$S train/figdesc/train_lora.py $W/try.yaml --max-steps 50 > $W/try.log 2>&1; rc=$?; mark "50 step 시험 $rc"
-[ $rc = 0 ] || exit 1
+if [ ! -f /workspace/runs/figdesc_try/val.json ]; then        # 50 step 시험을 따로 먼저 돌렸으면 건너뛴다
+  sed -e 's#/workspace/runs/figdesc_v1#/workspace/runs/figdesc_try#' -e 's/val_n: 200/val_n: 20/' configs/tune/figdesc_v1.yaml > $W/try.yaml
+  $S train/figdesc/train_lora.py $W/try.yaml --max-steps 50 > $W/try.log 2>&1; rc=$?; mark "50 step 시험 $rc"
+  [ $rc = 0 ] || exit 1
+fi
 $S train/figdesc/train_lora.py configs/tune/figdesc_v1.yaml > $W/train.log 2>&1; mark "본 학습 $?"
 [ -f $ADAPTER/adapter_model.safetensors ] || exit 1        # 끝의 합성 검증이 멈춰도 어댑터가 있으면 평가는 한다
 stage tuned --adapter $ADAPTER || exit 1
