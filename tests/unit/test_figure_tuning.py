@@ -152,6 +152,16 @@ def test_label_questions_by_block_type():
     assert not [q for q in label._questions("d", SimpleNamespace(type="image", id="p1.b3"), "2024 / 15.2") if q["qtype"] == "flow_next"]
 
 
+def test_meaningless_figures_are_not_packed():
+    """로고·아이콘·사진처럼 해석할 내용이 없는 그림은 라벨 묶음에 넣지 않는다 — 그래프·지도로 검출된 것은 늘 남긴다."""
+    B = lambda **k: SimpleNamespace(**{"type": "image", "bbox": (0, 0, 300, 200), "figure_text": "신청\n접수\n심사", **k})  # noqa: E731
+    assert not label.meaningless(B(), 600, 800)                                     # 넓이 12.5%·여러 줄 글 — 도식
+    assert label.meaningless(B(bbox=(0, 0, 80, 60)), 600, 800)                        # 1% — 로고·아이콘 크기
+    assert label.meaningless(B(figure_text="보건복지부"), 600, 800)                    # 한 줄 기관 이름 — 로고
+    assert label.meaningless(B(figure_text=None), 600, 800)                           # 글자 없는 사진·삽화
+    assert not label.meaningless(B(type="chart", bbox=(0, 0, 80, 60), figure_text=None), 600, 800)
+
+
 def test_label_agreement():
     ok = lambda a: {"ok_question": True, "answer": a, "note": ""}  # noqa: E731
     assert label.agreed("map_high", ok("남동쪽."), ok("남동쪽")) == "남동쪽"       # 정해진 보기 글로 되돌린다

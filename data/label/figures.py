@@ -26,6 +26,7 @@ from kdp.assemble.figures import _caption, _context, describe_targets  # noqa: E
 from kdp.config import DescribeCfg  # noqa: E402
 from kdp.enrich.pii import PHONE  # noqa: E402
 from kdp.figure_qa import DIAGRAM, NEEDS_X, QUESTIONS, alts, figure_text, nkey, prompt, same_short  # noqa: E402
+from kdp.geometry import page_size  # noqa: E402
 from kdp.schema import Document  # noqa: E402
 
 EVAL_DOCS = ("test2", "test3", "test4", "test5")    # 평가 문서(eval/judged) — 학습 자료에 넣지 않는다
@@ -42,6 +43,7 @@ STOP = {"과장", "팀장", "주무관", "사무관", "연구관", "연구사", 
         "올해", "이번", "오늘", "지난해", "당시", "현재", "신임", "전임", "초대", "역대", "또한", "특히", "한편", "이에", "이날", "관련",
         "우리", "정부", "전국", "최근", "지난", "오는", "공동", "주재", "직접", "함께", "모든", "해당", "산하", "부처", "국민", "기자"}
 NAME_MAX = 5                  # 문서에 이보다 많이 나오는 낱말은 이름이 아니다(흔한 낱말을 가리면 학습 자료가 망가진다)
+LOGO_AREA = 0.03              # 쪽 넓이 대비 — 이보다 작은 그림(로고·아이콘·마크)은 묶지 않는다(설명 대상은 1% 부터)
 LABEL_GUIDE = """당신은 한국어 공공 문서의 그래프·지도를 보고 짧은 물음의 정답을 매기는 라벨러입니다. 다른 라벨러도 같은 일을 따로 하고 있으니 남의
 결과를 찾거나 참고하지 말고 스스로 판단하세요. 이 정답은 그림 해석 모델의 학습 자료가 됩니다 — 확실한 것만 정답으로 매깁니다.
 
@@ -66,6 +68,8 @@ LABEL_GUIDE = """당신은 한국어 공공 문서의 그래프·지도를 보�
   하나로 정해지지 않거나, 'X' 가 이 그림의 단계 상자 글이 아니거나, 흐름도가 아니면 ok_question 을 false 로.
 - 조직도·체계도 물음(org_top·org_parent): 맨 위 상자, 'X' 와 선으로 이어진 바로 위 상자의 글을 그대로. 조직도·체계도가 아니거나
   'X' 가 상자 글이 아니면 false. 상자에 사람 이름이 적혀 있으면 이름은 답·note 어디에도 쓰지 말고 false.
+- 로고·엠블럼·아이콘·장식·사진처럼 해석할 내용이 없는 그림이 섞여 있으면 그 그림의 물음은 모두 ok_question 을 false 로 두고
+  note 에 '의미 없는 그림' 이라고 적습니다.
 - 물음이 이 그림에 맞지 않으면 ok_question 을 false 로, answer 는 빈 글로 둡니다 — 지도가 아닌데 방위를 묻거나 그래프가 아닌데
   흐름을 묻는 경우, 값이 없음, 지도·계열이 여럿이라 어느 것인지 정할 수 없음, 가장 큰 것이 둘 이상 거의 같아 그림으로 가릴 수 없음,
   확대해도 분명하지 않음.
@@ -133,6 +137,17 @@ def excluded_docs() -> tuple[set[str], set[str]]:
     return shas, names
 
 
+def meaningless(b, w: float, h: float) -> bool:
+    """해석할 내용이 없는 그림(로고·엠블럼·아이콘·마크·사진) — 라벨 묶음에 넣지 않는다(사용자 2026-10-20). 검출기가 그래프·지도(chart)로
+    본 것은 늘 남기고, 그 밖의 그림은 작거나(쪽 넓이 LOGO_AREA 미만), 그림 속 글자가 없거나(사진·삽화), 한 줄 짧은 글뿐(기관 이름·구호 —
+    로고·배너)이면 뺀다. w·h 는 쪽 크기(kdp.geometry.page_size)."""
+    if b.type == "chart":
+        return False
+    x0, y0, x1, y1 = b.bbox
+    lines = [s.strip() for s in (b.figure_text or "").splitlines() if s.strip()]
+    return (x1 - x0) * (y1 - y0) < LOGO_AREA * w * h or not lines or (len(lines) == 1 and len(lines[0]) <= 15)
+
+
 def _subject(qid: str, text: str) -> str | None:
     """'X' 물음의 X — 그림에서 읽은 글자 가운데 상자 글 같은 줄(2~20자, 숫자만·가린 줄은 아님)을 qid 로 정해 고른다(두 라벨러가 같은
     물음을 받는다). 상자 글이 아니면 라벨러가 물음이 맞지 않다고 뺀다."""
@@ -158,7 +173,7 @@ def _questions(tag: str, b, text: str) -> list[dict]:
 def pack(a) -> None:
     out = a.pack
     (out / "imgs").mkdir(parents=True, exist_ok=True)
-    items = []
+    items, dropped = [], 0
     cfg = DescribeCfg(enabled=True)
     shas, names = excluded_docs()
     for d in a.outs:
@@ -169,6 +184,9 @@ def pack(a) -> None:
         clean = masker(pii_names(doc))
         tag = d.name[:12]
         for page, b in describe_targets(doc, cfg):
+            if meaningless(b, *page_size(page)):
+                dropped += 1
+                continue
             img = f"imgs/{tag}_{b.id}.png"
             shutil.copyfile(d / "raw" / b.img_path, out / img)
             before, after = _context(doc, b)
@@ -177,7 +195,8 @@ def pack(a) -> None:
             items.append({"doc": tag, "block": b.id, "image": str((out / img).resolve()), "caption": cap or "(없음)",
                           "figure_text": text, "before": clean(before), "after": clean(after), "questions": _questions(tag, b, text)})
     (out / "figures.json").write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"그림 {len(items)}개 · 물음 {sum(len(x['questions']) for x in items)}개 → {out / 'figures.json'}")
+    print(f"그림 {len(items)}개(로고·사진 같은 의미 없는 그림 {dropped}개 뺌) · 물음 {sum(len(x['questions']) for x in items)}개"
+          f" → {out / 'figures.json'}")
 
 
 def agreed(qtype: str, la: dict, lb: dict) -> str | None:
