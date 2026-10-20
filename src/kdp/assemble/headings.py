@@ -176,7 +176,7 @@ def _place(stack: list, kind: str, text: str, h: float | None, x: float | None) 
     if _bullet(text):
         report = kind in _ORDER
         same = [i for i, (k, s, hh, xx) in enumerate(stack)
-                if hh is not None and (k in _MISREAD if report else _bullet(s))
+                if hh is not None and (k == _MISREAD if report else _bullet(s))   # 기호 없는 제목(체계 None)도 스택에 있다
                 and max(h, hh) <= min(h, hh) * (1 + HEIGHT_GAP) and abs(x - xx) <= X_TOL]
         if len(same) == 1:
             return same[0], (kind if report else stack[same[0]][0])

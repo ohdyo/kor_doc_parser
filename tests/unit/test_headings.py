@@ -637,3 +637,13 @@ def test_summary_circled_lines_do_not_hold_sections():
             b = _by_text(doc)
             assert (b[first].heading_level, b[second].heading_level) == (1, 1), (marks, first)   # 요약 핵심 줄 밑으로 넣지 않는다
             assert b[first].section_path == [first], (marks, first)
+
+
+def test_place_skips_unmarked_stack_titles():
+    """기호 없는 제목(체계 None)이 스택에 있어도 보고서체 기호 자리 찾기가 멈추지 않는다 — tr08(공개 보도자료) 조립이 TypeError 로
+    멈췄다(2026-10-20)."""
+    from kdp.assemble.headings import _place
+
+    stack = [(None, "개요", 14.0, 50.0), ("□", "□ 추진 배경", 12.0, 50.0)]
+    t, kind = _place(stack, "○", "○ 세부 내용", 12.0, 60.0)
+    assert kind == "○" and 0 <= t <= len(stack)
