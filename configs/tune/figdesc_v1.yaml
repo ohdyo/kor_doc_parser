@@ -2,9 +2,9 @@
 #   python train/figdesc/train_lora.py configs/tune/figdesc_v1.yaml            (먼저 --max-steps 50 으로 시간·메모리를 잰다)
 model: skt/A.X-4.0-VL-Light
 data:                                   # 학습 자료(JSONL: image·prompt·answer — image 는 JSONL 폴더 기준), weight 는 섞는 비율
-  - {path: /workspace/datasets/figsynth_v1/train.jsonl, weight: 1.0}          # 합성 그래프·지도(data/synth/figures.py — 정답은 코드가 계산)
-  # - {path: /workspace/datasets/figlabel_v1/train.jsonl, weight: 1.0}        # 실제 공개 문서 그림(data/label/figures.py — Claude 라벨러 둘이 같게 본 정답)
-val: /workspace/datasets/figsynth_v1/val.jsonl
+  - {path: /workspace/tt_dt/tr_dt/synth/train.jsonl, weight: 1.0}            # 합성 그래프·지도·흐름도·조직도 8,103줄(data/synth/figures.py — 정답은 코드가 계산)
+  - {path: /workspace/tt_dt/tr_dt/real/train.jsonl, weight: 2.0}             # 실제 공개 문서 그림 605줄(Claude 라벨러 둘이 같게 본 정답) — 적어서 두 번 섞는다
+val: /workspace/tt_dt/tr_dt/synth/val.jsonl                                    # push.sh 가 이 컴퓨터 tt_dt/tr_dt 를 올린다
 out: /workspace/runs/figdesc_v1
 lora: {rank: 16, alpha: 32, dropout: 0.05}   # 언어 모델 q·k·v·o·gate·up·down, 그림 인코더·연결부는 얼린다
 train: {lr: 1.0e-4, warmup: 0.03, epochs: 1, accum: 8, max_steps: null, seed: 0, save_every: 200, log_every: 10, val_n: 200}

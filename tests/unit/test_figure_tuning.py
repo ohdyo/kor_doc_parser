@@ -35,11 +35,12 @@ def opts(row):
 
 def test_prompt_matches_eval_questions():
     """학습·라벨 물음이 평가 물음(eval/judged/figure_questions.jsonl)과 글자까지 같다."""
-    for q in fq.load_questions():
+    for q in fq.load_questions():                                # 기존(test2~5)과 새 시험지(tt) 모두
         cap, text = HEAD_RE.search(q["prompt_A"]).groups()
-        assert prompt(q["qtype"], cap, text, q["options_A"]) == q["prompt_A"]
+        assert prompt(q["qtype"], cap, text, q["options_A"], x=q.get("x")) == q["prompt_A"]
         if q["options_B"]:
-            assert prompt(q["qtype"], cap, text, q["options_B"]) == q["prompt_B"]
+            assert prompt(q["qtype"], cap, text, q["options_B"], x=q.get("x")) == q["prompt_B"]
+            assert q["options_B"] == q["options_A"][::-1]
 
 
 def test_diagram_prompt_puts_box_text_and_tail():

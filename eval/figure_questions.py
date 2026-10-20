@@ -11,6 +11,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import re
 import sys
 from collections import Counter, defaultdict
@@ -21,14 +22,23 @@ sys.path.insert(0, str(ROOT / "src"))
 from kdp.figure_qa import alts, nkey, same_short  # noqa: E402
 
 QUESTIONS = ROOT / "eval" / "judged" / "figure_questions.jsonl"
+QUESTIONS_TT = ROOT / "eval" / "judged" / "figure_questions_tt.jsonl"   # 새 시험지(tt 문서 6개 — eval/testset/build_questions.py)
+TT_PDF = Path(os.environ.get("TT_DT", "/workspace/tt_dt")) / "pdf"     # 새 시험지 PDF(저장소 밖 — push.sh 가 서버에 올린다)
 DEV, TEST = ("test2", "test3"), ("test4", "test5")
 DPI = 144                                     # 파서 렌더 해상도(configs/parse/default.yaml) — 실제 크롭과 같게
 PASS_ACC, PASS_COVER = 0.90, 0.40
 THRESHOLDS = (-0.02, -0.05, -0.1, -0.2, -0.3, -0.5, -0.7, -1.0, None)
 
 
-def load_questions(path: Path = QUESTIONS) -> list[dict]:
-    return [json.loads(x) for x in open(path, encoding="utf-8")]
+def load_questions(path: Path | None = None) -> list[dict]:
+    """물음 — path 를 안 주면 기존 물음(test2~5)과, 있으면 새 시험지 물음(tt)까지."""
+    paths = [path] if path else [p for p in (QUESTIONS, QUESTIONS_TT) if p.exists()]
+    return [json.loads(x) for p in paths for x in open(p, encoding="utf-8") if x.strip()]
+
+
+def pdf_path(doc: str) -> Path:
+    """test2~5 는 저장소 뿌리, 새 시험지(tt..)는 TT_DT/pdf."""
+    return ROOT / f"{doc}.pdf" if (ROOT / f"{doc}.pdf").exists() else TT_PDF / f"{doc}.pdf"
 
 
 def keys_of(q: dict) -> set[str] | None:
@@ -46,7 +56,7 @@ def crop(pdf_cache: dict, doc: str, page: int, bbox: list[float]) -> bytes:
     import pypdfium2 as pdfium
 
     if doc not in pdf_cache:
-        pdf_cache[doc] = pdfium.PdfDocument(str(ROOT / f"{doc}.pdf"))
+        pdf_cache[doc] = pdfium.PdfDocument(str(pdf_path(doc)))
     s = DPI / 72
     img = pdf_cache[doc][page - 1].render(scale=s).to_pil()
     x0, y0, x1, y1 = bbox
@@ -159,7 +169,8 @@ def score(a) -> None:
         rows = score_rows(qs, [json.loads(x) for x in open(path, encoding="utf-8")])
         print(f"\n== {path}")
         s2 = {}
-        for name, docs in (("개발 test2·test3", DEV), ("확인 test4·test5", TEST)):
+        new = tuple(sorted({q["doc"] for q in qs if q["doc"].startswith("tt")}))
+        for name, docs in (("개발 test2·test3", DEV), ("확인 test4·test5", TEST)) + ((("새 시험지 " + "·".join(new), new),) if new else ()):
             s = s2[docs] = summary([r for r in rows if r["doc"] in docs])
             print(f"  {name}: 정답 {s['acc']:.0%}({s['n']}물음) AUC {s['auc']:.2f}"
                   f" | 갈래별 {', '.join(f'{k} {v[0]}/{v[1]}' for k, v in s['by_qtype'].items())}")
@@ -169,6 +180,10 @@ def score(a) -> None:
         print("  판정: " + (f"개발에서 고른 문턱 {'전부' if v['th'] is None else v['th']} → 확인 답함 {v['test']['cover']:.0%}"
                           f"·정답 {v['test']['acc']:.0%} — 통과 {'예' if v['pass'] else '아니오'}" if v["chosen"]
                           else "개발에서 기준을 넘는 문턱이 없다 — 통과 아니오"))
+        if new:
+            vn = verdict(s2[DEV], s2[new])
+            print("  새 시험지 판정(같은 문턱): " + (f"답함 {vn['test']['cover']:.0%}·정답 {vn['test']['acc']:.0%} — 통과 {'예' if vn['pass'] else '아니오'}"
+                                             if vn["chosen"] else "개발에서 기준을 넘는 문턱이 없다 — 통과 아니오"))
         print("  지도 물음 답 분포(보기 순서 A — 한 방위로 쏠리면 찍는 것):",
               dict(Counter(r["ans"] for r in rows if r["qtype"].startswith("map"))))
 

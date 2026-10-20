@@ -19,6 +19,12 @@ for sub in pdf tr_dt/pdf; do
     rsync -az -e "$E" --include '*.pdf' --exclude '*' "$TT/$sub/" "$DEST:/workspace/tt_dt/$sub/"
   fi
 done
+SRC=()                                                # 그림 해석 학습 자료 — 합성(synth)·실제 그림 정답(real)·그 그림(label 묶음)
+for sub in synth real label; do [ -d "$TT/tr_dt/$sub" ] && SRC+=("$TT/tr_dt/$sub"); done
+if [ ${#SRC[@]} -gt 0 ]; then                         # 라벨러의 확대 사본·지시문·몫 파일은 보내지 않는다
+  $E "$DEST" "mkdir -p /workspace/tt_dt/tr_dt"
+  rsync -az -e "$E" --exclude 'zoom_*' --exclude 'guide_*' --exclude 'figures_p*.json' "${SRC[@]}" "$DEST:/workspace/tt_dt/tr_dt/"
+fi
 rsync -az -e "$E" ~/.paddlex/official_models/PP-DocLayoutV3 ~/.paddlex/official_models/PP-LCNet_x1_0_doc_ori \
   "$DEST:/root/.paddlex/official_models/"
 for pdf in "${PUBLIC[@]}"; do                        # 비교군 결과(텍스트 레이어·docling·PaddleOCR-VL 기본) — 서버에서 다시 돌리지 않게
