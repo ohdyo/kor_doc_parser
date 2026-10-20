@@ -175,7 +175,7 @@ def pack(a) -> None:
     (out / "imgs").mkdir(parents=True, exist_ok=True)
     items, dropped = [], 0
     cfg = DescribeCfg(enabled=True)
-    shas, names = excluded_docs()
+    shas, names = excluded_docs() if not a.keep_eval else (set(), set())   # 시험지를 묶을 때(--keep-eval)만 평가·시험 문서도 넣는다
     for d in a.outs:
         doc = Document.model_validate_json((d / "document.json").read_text(encoding="utf-8"))
         if doc.doc_id.split(":")[-1] in shas or {Path(x).name for x in doc.source.paths} & names:
@@ -247,6 +247,7 @@ def main(argv=None) -> None:
     p = sub.add_parser("pack")
     p.add_argument("outs", nargs="+", type=Path, help="kdp 출력의 문서 폴더(document.json 이 든 곳)")
     p.add_argument("--pack", type=Path, required=True)
+    p.add_argument("--keep-eval", action="store_true", help="시험지 라벨 묶음 — 평가·시험 문서를 빼지 않는다(학습 묶음에는 쓰지 말 것)")
     p = sub.add_parser("merge")
     p.add_argument("pack", type=Path)
     p.add_argument("labels_a")
