@@ -11,3 +11,6 @@ datasets/
 runs/
 *.safetensors
 *.pdparams
+
+# 포트폴리오 결과보고서(원본·그림·PDF) — 저장소에 올리지 않는다
+report/
