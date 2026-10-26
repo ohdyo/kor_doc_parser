@@ -371,3 +371,26 @@ def test_rag_markdown_chain_with_image_piece():
                                "<표 4> 기온 (계속)\n![표](imgs/p2.b01.png)\n" + TABLE,
                                "<표 4> 기온 (계속)\n<table><tr><th>지점</th><th>기온</th></tr><tr><td>제천</td><td>24.2</td></tr></table>",
                                "<!-- page 2 -->", "<!-- page 3 -->"]
+
+
+def test_rag_markdown_pipe_tables():
+    """table_format 'pipe' — 칸을 읽은 표는 파이프 표로(제목·'(계속)'·단위 줄은 HTML 꼴과 같다), 이미지 갈래 표는 HTML 그대로."""
+    def row(i):
+        return f"<tr><td>지점{i}</td><td>{i}.5</td></tr>"
+
+    html = "<table><tr><th>지점</th><th>기온</th></tr>" + "".join(map(row, range(1, 4))) + "</table>"
+    doc = _doc(_page(1, ("figure_title", "<표 2> 지점별 기온"),
+                     ("table", None, {"html": html, "caption_id": "p1.b01", "unit": "℃", "header_rows": 1}),
+                     ("table", None, {"html": TABLE, "route": "image", "route_reason": "failed", "img_path": "imgs/p1.b03.png"})))
+    head = "| 지점 | 기온 |\n|---|---|"
+    rag = render_rag_markdown(doc, table_format="pipe")
+    assert _chunks(rag)[1:] == ["<표 2> 지점별 기온\n" + head + "\n| 지점1 | 1.5 |\n| 지점2 | 2.5 |\n| 지점3 | 3.5 |",
+                                "![표](imgs/p1.b03.png)\n" + TABLE]
+    small = len(head) + 1 + len("| 지점1 | 1.5 |")
+    assert _chunks(render_rag_markdown(doc, small, "pipe"))[1:4] == [
+        "<표 2> 지점별 기온\n" + head + "\n| 지점1 | 1.5 |",
+        "<표 2> 지점별 기온 (계속) (단위: ℃)\n" + head + "\n| 지점2 | 2.5 |",
+        "<표 2> 지점별 기온 (계속) (단위: ℃)\n" + head + "\n| 지점3 | 3.5 |"]
+    assert render_rag_markdown(doc) != rag                                             # 기본은 HTML 그대로
+    markdown_it = pytest.importorskip("markdown_it")
+    assert markdown_it.MarkdownIt("commonmark").enable("table").render(rag).count("<table>") == 2   # 파이프 표 + 이미지 갈래 HTML 표

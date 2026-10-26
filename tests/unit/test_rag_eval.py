@@ -115,9 +115,9 @@ def test_lightrag_chunk_rank():
 
 
 def test_lightrag_runs_and_graph_hit():
-    assert lr.parse_runs("kdp_rag:512, kdp:1200") == [("kdp_rag", 512), ("kdp", 1200)]
+    assert lr.parse_runs("kdp_rag:512, kdp:1200:R") == [("kdp_rag", 512, "F"), ("kdp", 1200, "R")]
     with pytest.raises(SystemExit):
-        lr.parse_runs("kdp_rag:abc")
+        lr.parse_runs("kdp_rag:512:X")
     evidence = [[ev.norm("17.5")], [ev.norm("23.1")]]
     other = {"file_path": "test3", "description": "충북 17.5% 23.1℃"}                      # 다른 문서의 설명은 보지 않는다
     low = {"file_path": "test5<SEP>test4", "description": "최저 17.5℃"}
@@ -125,3 +125,21 @@ def test_lightrag_runs_and_graph_hit():
     assert lr.graph_hit([other, low, {"file_path": "test5", "description": "최고 23.1℃"}], "test5", evidence)   # 묶음마다 어느 설명에든
     assert not lr.graph_hit([{"file_path": "test5", "description": "17."}, {"file_path": "test5", "description": "5 23.1"}],
                             "test5", [[ev.norm("17.523.1")]])                             # 설명 경계에서 글자가 붙지 않는다
+
+
+
+def test_variant_system(tmp_path):
+    """--variant '이름=폴더' — 다른 설정으로 다시 조립한 kdp 출력의 document.rag.md 를 계통으로 더한다."""
+    for folder, text in (("kdp", "가 표"), ("pipe", "가 파이프")):
+        d = tmp_path / folder / "x"
+        d.mkdir(parents=True)
+        (d / "document.json").write_text('{"doc_id": "sha256:1"}', encoding="utf-8")
+        (d / "document.md").write_text("md", encoding="utf-8")
+        (d / "document.rag.md").write_text(text, encoding="utf-8")
+    variants = ev.parse_variants([f"kdp_rag_pipe={tmp_path / 'pipe'}"])
+    assert ev.system_texts(tmp_path / "kdp", None, {"sha256:1"}, ("kdp", "kdp_rag"), variants) == {
+        "kdp": {"sha256:1": "md"}, "kdp_rag": {"sha256:1": "가 표"}, "kdp_rag_pipe": {"sha256:1": "가 파이프"}}
+    with pytest.raises(SystemExit):
+        ev.parse_variants(["kdp=x"])                                                   # 이미 있는 계통 이름
+    assert lr.parse_runs("kdp_rag_pipe:512:R", {**ev.NAMES, **variants}) == [("kdp_rag_pipe", 512, "R")]
+    assert lr.run_label("kdp_rag", 512, "F") == "kdp_rag:512" and lr.run_name("kdp_rag_pipe:512:R").endswith("R 구조 자르기")

@@ -232,7 +232,7 @@ def write_outputs(doc: Document, doc_dir: Path, out: OutputCfg) -> None:
         md.unlink(missing_ok=True)
     rag = doc_dir / "document.rag.md"                  # RAG 적재용(D21) — 정본에 넣지 않고 정본에서 바로 만든다
     if out.write_rag_markdown:
-        write_text(rag, render_rag_markdown(doc, out.rag_table_chars))
+        write_text(rag, render_rag_markdown(doc, out.rag_table_chars, out.rag_table_format))
     else:
         rag.unlink(missing_ok=True)
     jsonl = doc_dir / "blocks.jsonl"

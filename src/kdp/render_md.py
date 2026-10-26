@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 
 from .assemble.order import kept
-from .assemble.tables import regroup
+from .assemble.tables import pipe_regroup, regroup
 from .convert import FIGURE_LABELS
 from .schema import Block, Document
 
@@ -151,11 +151,12 @@ def render_markdown(doc: Document) -> str:
     return "\n\n".join(out) + "\n" if out else ""
 
 
-def render_rag_markdown(doc: Document, max_table_chars: int = RAG_TABLE_CHARS) -> str:
+def render_rag_markdown(doc: Document, max_table_chars: int = RAG_TABLE_CHARS, table_format: str = "html") -> str:
     """RAG 적재용 마크다운(D21) — document.md 와 같은 블록·차례·글이되 마크다운만 받는 도구(길이로 자르는 청커)에 맞춘다.
     블록 앵커는 빼고 쪽 주석만 둔다. 표·그림 제목(caption_id)은 제자리에서 빼 표·그림 바로 앞에 붙이고, 블록 하나를 빈 줄 없는
     한 덩이로 낸다(제목·그림 링크·설명·그림 속 글자가 갈라지지 않게). 쪽 넘김 표는 한 표로 잇고, max_table_chars 보다 긴 표는
-    행 묶음으로 나눠 묶음마다 머리행과 '제목 (계속)' 줄을 되풀이한다(4.1 — 표 뒷부분이 머리행 없는 청크가 되지 않게)."""
+    행 묶음으로 나눠 묶음마다 머리행과 '제목 (계속)' 줄을 되풀이한다(4.1 — 표 뒷부분이 머리행 없는 청크가 되지 않게).
+    table_format 'pipe' 면 칸을 읽은 표를 HTML 대신 파이프 표로(병합 칸을 풀고 머리행을 한 줄로 — pipe_regroup)."""
     by_id = {b.id: b for _, b in kept(doc)}
     caps = _captions(by_id)
     moved = {c.id for c in caps.values()}
@@ -163,7 +164,7 @@ def render_rag_markdown(doc: Document, max_table_chars: int = RAG_TABLE_CHARS) -
     for n, blocks in _walk(doc):
         if blocks is None:
             out.append(f"<!-- page {n} -->")
-        elif body := _rag_unit([b for b in blocks if b.id not in moved], by_id, caps, max_table_chars):
+        elif body := _rag_unit([b for b in blocks if b.id not in moved], by_id, caps, max_table_chars, table_format):
             out.append(body)
     return "\n\n".join(out) + "\n" if out else ""
 
@@ -207,17 +208,17 @@ def _continued(first: Block, cap: Block | None) -> str:
                                 f"(단위: {first.unit})" if first.unit else "") if x)
 
 
-def _rag_unit(blocks: list[Block], by_id: dict[str, Block], caps: dict[str, Block], max_chars: int) -> str:
+def _rag_unit(blocks: list[Block], by_id: dict[str, Block], caps: dict[str, Block], max_chars: int, fmt: str) -> str:
     if not blocks:
         return ""
     if len(blocks) > 1 and all(map(_is_para, blocks)):
         return _text(blocks[0], " ".join(b.text.strip() for b in blocks), rag=True)
     if all(map(_splittable, blocks)):
-        return _rag_table(blocks, by_id, caps, max_chars)
+        return _rag_table(blocks, by_id, caps, max_chars, fmt)
     out = []                                        # 섞인 사슬(이미지 갈래 표 조각이 낀 쪽 넘김 표 등) — 블록마다
     for b in blocks:
         if _splittable(b):
-            out.append(_rag_table([b], by_id, caps, max_chars))
+            out.append(_rag_table([b], by_id, caps, max_chars, fmt))
         elif b.type == "table" and (first := _first_piece(b, by_id)) is not b:
             out.append(_rag_block(b, line=_continued(first, caps.get(first.id))))
         else:
@@ -225,7 +226,7 @@ def _rag_unit(blocks: list[Block], by_id: dict[str, Block], caps: dict[str, Bloc
     return "\n\n".join(out)
 
 
-def _rag_table(tables: list[Block], by_id: dict[str, Block], caps: dict[str, Block], max_chars: int) -> str:
+def _rag_table(tables: list[Block], by_id: dict[str, Block], caps: dict[str, Block], max_chars: int, fmt: str) -> str:
     """표(쪽 넘김 사슬이면 이은 한 표)를 행 묶음으로 — 첫 묶음 앞에 제목, 뒤 묶음 앞에 '제목 (계속)'(단위가 있으면 함께).
     사슬 첫 조각이 이 묶음 밖에 있으면(섹션이 달라 끌어오지 않았거나 이미지 갈래 조각이 사이에 있다) 첫 묶음부터 '제목 (계속)'.
     머리행은 사슬 첫 조각에서 빌리고(그 조각이 이미지 갈래면 이 묶음 첫 조각에서), 수는 조각들 header_rows 의 가장 큰 값이다 —
@@ -236,11 +237,13 @@ def _rag_table(tables: list[Block], by_id: dict[str, Block], caps: dict[str, Blo
     cap = caps.get(first.id)
     src = first if _splittable(first) else tables[0]
     n_head = max([src.header_rows or 0] + [t.header_rows or 0 for t in tables if t is not src])
-    if not lone and len(tables) == 1 and len(src.html.strip()) <= max_chars:
+    pieces = [(t.html, n_head if t is src else t.header_rows or 0) for t in tables]
+    if fmt == "pipe":
+        groups = pipe_regroup((src.html, n_head), pieces, max_chars)
+    elif not lone and len(tables) == 1 and len(src.html.strip()) <= max_chars:
         groups = [src.html.strip()]
     else:
-        groups = regroup((src.html, n_head), [(t.html, n_head if t is src else t.header_rows or 0) for t in tables],
-                         max_chars)
+        groups = regroup((src.html, n_head), pieces, max_chars)
     more = _continued(first, cap)
     out = []
     for k, g in enumerate(groups):

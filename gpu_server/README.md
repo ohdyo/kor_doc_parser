@@ -29,6 +29,7 @@
 | 서버 | `tmux new -d -s rag "bash /workspace/kor_doc_parser/gpu_server/rag_eval.sh"` | 단위 시험 → 비교군(텍스트 레이어·PaddleOCR-VL 기본·docling) → kdp 다시 조립(raw/ 만 두고 새로 쓴다 — document.rag.md 를 더 쓰고, document.json·document.md·blocks.jsonl 이 원래 출력과 같은지 `cmp`) → 같은 자르기·같은 검색기 평가(LightRAG 512·1,200토큰·구조 자르기 × BM25·BGE-M3) → LightRAG 저장소 평가(kdp document.rag.md·document.md·PaddleOCR-VL 기본은 512토큰, document.rag.md 는 1,200토큰으로도 × naive·mix). PaddleOCR-VL·LLM 서버는 스크립트가 띄우고 내리므로 먼저 띄우지 않는다. 진행은 `/workspace/rag_eval/status.txt` |
 | 이 컴퓨터 | `bash gpu_server/pull.sh <주소> <포트>` | `runs/rag_eval/` 로 보고(`report/`·`lightrag_report/`)·비교군 출력·다시 조립한 마크다운을 가져온다(raw·LightRAG 저장소는 두고 온다) |
 
+- 2회차(`테스트_결과.md` 14.8): `rag_eval.sh` 를 한 번 돌린 서버에서 `tmux new -d -s rag2 "bash …/gpu_server/rag_eval2.sh"` — kdp 를 표 HTML·파이프 표 두 벌로 다시 조립해 검색 평가(LightRAG F·R 512토큰·구조 자르기). LightRAG 저장소는 고른 실행 하나만 `lightrag_one.sh <이름> --runs kdp_rag_pipe:512:R --variant kdp_rag_pipe=/workspace/rag_eval/kdp_pipe`(LLM 서버를 띄우고 내린다). R 전략에는 `kdp-rag` 에 langchain-text-splitters 가 있어야 한다(setup_eval.sh).
 - LightRAG 의 LLM 은 `serve_llm.sh`(vLLM, 127.0.0.1:8120) — 기본 국내 모델 `skt/A.X-4.0-Light`(7.3B, Apache-2.0, 문맥 16k). 바꾸려면 `MODEL=Qwen/Qwen3-14B UTIL=0.8`(rag_eval.sh 안의 serve_llm.sh 줄)과 `eval/lightrag_eval.py --llm-model` 을 같은 이름으로. LightRAG 는 temperature·max_tokens 를 보내지 않아(그대로면 vLLM 이 1.0 으로 뽑는다) 평가 스크립트가 0·2,048 로 건다. 7B 에 맞춘 설정: 청크 512토큰(사용자 결정), 글리닝 1, 한국어 엔티티 종류 안내(사람 이름은 뽑지 않음), 추출 언어 Korean.
 - LightRAG 벡터 저장소는 NanoVectorDB(`NanoVectorDBStorage`, LightRAG 기본·MIT — numpy 로 모두 견주는 정확 검색, 사용자 결정 2026-10-26). 그래프는 NetworkX, 나머지는 JSON — 모두 `/workspace/rag_eval/lightrag/<계통>-<토큰>/` 파일이고 실행마다 지우고 새로 만든다(옛 글이 남지 않게). 다시 돌려도 같은 값이 나오는 것은 naive 와 `rag_eval.py` 다 — mix 는 LLM 이 추출한 그래프라 temperature 0 이어도 동시 요청 묶음에 따라 조금 달라질 수 있다.
 - 임베딩은 BGE-M3(MIT)를 평가 프로세스 안에서 쓴다(처음에 약 2.3GB 를 받는다). LightRAG 자르기의 tiktoken 은 처음 쓸 때 o200k_base 표를 받는다(setup_eval.sh 가 미리 받는다).
@@ -43,7 +44,7 @@
 |---|---|
 | `kdp-serve`(vLLM 서버) | vllm 0.31.0, torch 2.13.0, transformers 5.16.1 — 드라이버 580 이상이면 PyPI 판(CUDA 13.0 빌드), 미만이면 vLLM 의 CUDA 12.9 판(GitHub 배포 `+cu129`)·torch `+cu129`·torchcodec 0.17.0 CPU 판(setup_envs.sh 가 드라이버를 보고 고른다) |
 | `kdp-paddle`(파서) | paddlepaddle-gpu 3.3.1(cu126 빌드), paddleocr 3.7.0, paddlex 3.7.2, 이 저장소(`pip install -e ".[test]"`) |
-| `kdp-rag`(RAG 하류 평가, D21·D22) | lightrag-hku 1.5.7(nano-vectordb 함께), torch 2.13.0(드라이버 기준은 kdp-serve 와 같다), transformers 4.57.x(BGE-M3 — kdp-serve 의 5.16 과 다르다), openai 2~3.x 라이브러리, tiktoken — setup_eval.sh |
+| `kdp-rag`(RAG 하류 평가, D21·D22) | lightrag-hku 1.5.7(nano-vectordb 함께), torch 2.13.0(드라이버 기준은 kdp-serve 와 같다), transformers 4.57.x(BGE-M3 — kdp-serve 의 5.16 과 다르다), openai 2~3.x 라이브러리, tiktoken, langchain-text-splitters(R 전략) — setup_eval.sh |
 | `kdp-docling`(비교군) | docling 2.138.0(CPU torch), pypdfium2 5.14.0, 이 저장소(`--no-deps`) — setup_eval.sh |
 
 ## vLLM 옵션 (`serve_vlm.sh`)

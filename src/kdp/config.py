@@ -133,6 +133,7 @@ class OutputCfg(_Cfg):
     write_markdown: bool = True
     write_rag_markdown: bool = True      # D21 — document.rag.md(앵커 없음, 표·그림 제목을 앞에, 긴 표는 머리행 되풀이 행 묶음)
     rag_table_chars: int = 400           # 이보다 긴 표 HTML 은 행 묶음으로 — 받는 쪽 청크의 절반 안(LightRAG 512토큰 ≈ 표 HTML 900자)
+    rag_table_format: Literal["html", "pipe"] = "html"   # pipe 면 병합 칸을 푼 파이프 표(머리행 한 줄)
     write_jsonl: bool = True
     save_images: bool = True
     keep_raw: bool = True

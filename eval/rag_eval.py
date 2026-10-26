@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 QUESTIONS = ROOT / "eval" / "golden" / "rag_questions.yaml"
 SYSTEMS = ("textlayer", "paddle_default", "docling", "kdp", "kdp_rag")
 NAMES = {"textlayer": "텍스트 레이어", "paddle_default": "PaddleOCR-VL 기본", "docling": "docling",
-         "kdp": "kdp document.md", "kdp_rag": "kdp document.rag.md"}
+         "kdp": "kdp document.md", "kdp_rag": "kdp document.rag.md", "kdp_rag_pipe": "kdp document.rag.md · 파이프 표"}
 KDP_FILES = {"kdp": "document.md", "kdp_rag": "document.rag.md"}
 RETRIEVER_NAMES = {"bm25": "BM25(글자 2-gram)", "bge-m3": "BGE-M3"}
 TYPES = ("문단", "표", "그림")
@@ -110,14 +110,28 @@ def compare_texts(root: Path) -> dict[str, dict[str, str]]:
     return out
 
 
-def system_texts(kdp: Path, compare: Path | None, need: set[str], wanted=SYSTEMS) -> dict[str, dict[str, str]]:
+def parse_variants(specs: list[str] | None) -> dict[str, Path]:
+    """'이름=폴더' 목록 — 같은 kdp 출력을 다른 설정으로 다시 조립한 폴더(그 안 문서 폴더마다 document.rag.md)를 한 계통으로."""
+    out = {}
+    for spec in specs or []:
+        name, _, path = spec.partition("=")
+        if not name or not path or "|" in name or name in SYSTEMS:
+            sys.exit(f"--variant 가 잘못됐다: {spec}")
+        out[name] = Path(path)
+    return out
+
+
+def system_texts(kdp: Path, compare: Path | None, need: set[str], wanted=SYSTEMS,
+                 variants: dict[str, Path] | None = None) -> dict[str, dict[str, str]]:
     """평가할 계통의 글 — 질문 문서가 하나라도 없는 계통은 알리고 뺀다(질문 수가 다른 칸을 나란히 두지 않게). 말뭉치는 질문 문서만."""
     texts = {**kdp_texts(kdp), **(compare_texts(compare) if compare else {})}
+    for name, path in (variants or {}).items():
+        texts[name] = kdp_texts(path)["kdp_rag"]
     out = {}
-    for s in wanted:
+    for s in [*wanted, *(variants or {})]:
         miss = need - set(texts.get(s, {}))
         if miss:
-            print(f"{NAMES[s]} 뺌 — 글이 없는 문서 {len(miss)}개({', '.join(sorted(m[7:15] for m in miss))})", file=sys.stderr)
+            print(f"{NAMES.get(s, s)} 뺌 — 글이 없는 문서 {len(miss)}개({', '.join(sorted(m[7:15] for m in miss))})", file=sys.stderr)
             continue
         out[s] = {d: t for d, t in texts[s].items() if d in need}
     return out
@@ -172,8 +186,22 @@ def chunk_lightrag(text: str, size: int = LR_TOKENS, overlap: int = LR_OVERLAP) 
             if c["content"].strip()]
 
 
+def chunk_lightrag_r(text: str, size: int = LR_TOKENS, overlap: int = LR_OVERLAP) -> list[str]:
+    """LightRAG 의 R 전략(구조 자르기 — 빈 줄·줄바꿈·… 경계에서 나눠 size 토큰까지 모은다, LangChain RecursiveCharacterTextSplitter)
+    그대로 — 넣기에서 process_options 'R' 이 쓰는 기본 구분자(addon_params chunker 기본값)와 겹침, 넣기처럼 먼저 다듬는다."""
+    from lightrag.chunker import chunking_by_recursive_character
+    from lightrag.parser.routing import default_chunker_config
+    from lightrag.utils import sanitize_text_for_encoding
+
+    opts = default_chunker_config().get("recursive_character") or {}
+    return [c["content"] for c in chunking_by_recursive_character(
+        _tiktoken(), sanitize_text_for_encoding(text), size, chunk_overlap_token_size=opts.get("chunk_overlap_token_size", overlap),
+        separators=opts.get("separators")) if c["content"].strip()]
+
+
 CHUNKERS: dict[str, tuple[str, Callable[[str], list[str]]]] = {
     "lightrag": (f"LightRAG 자르기({LR_TOKENS}토큰·{LR_OVERLAP} 겹침)", chunk_lightrag),
+    "lightrag_r": (f"LightRAG R 전략 구조 자르기({LR_TOKENS}토큰·{LR_OVERLAP} 겹침)", chunk_lightrag_r),
     "lightrag1200": (f"LightRAG 자르기({LR_DEFAULT:,}토큰 — LightRAG 기본)", functools.partial(chunk_lightrag, size=LR_DEFAULT)),
     "structure": (f"구조 자르기({SIZE:,}자)", chunk_structure),
     "length": (f"길이 자르기({SIZE:,}자·{OVERLAP} 겹침)", chunk_length),
@@ -312,7 +340,7 @@ def render(summary: dict, stats: list[dict], questions: list[dict], systems: lis
             for system in systems:
                 s = summary[f"{retriever}|{chunker}|{system}"]
                 c = st[(system, chunker)]
-                lines.append(f"| {NAMES[system]} | {c['chunks']} | {c['avg_chars']} | {frac(s['r5'], s['n'])} | "
+                lines.append(f"| {NAMES.get(system, system)} | {c['chunks']} | {c['avg_chars']} | {frac(s['r5'], s['n'])} | "
                              + " | ".join(frac(*s["by_type"][t]) for t in TYPES)
                              + f" | {s['mrr']:.3f} | {s['in_text']}/{s['n']} | {s['in_chunks']}/{s['n']} |")
             lines.append("")
@@ -327,6 +355,7 @@ def main(argv=None) -> None:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--retrievers", default="bm25,bge-m3")
     ap.add_argument("--chunkers", default="lightrag,lightrag1200,structure")
+    ap.add_argument("--variant", action="append", help="'이름=폴더' — 다른 설정으로 다시 조립한 kdp 출력(document.rag.md)을 계통으로 더한다")
     ap.add_argument("--model", default="BAAI/bge-m3")
     ap.add_argument("--device", default="cuda")
     a = ap.parse_args(argv)
@@ -335,7 +364,7 @@ def main(argv=None) -> None:
     chunkers = [c for c in a.chunkers.split(",") if c]
     if set(retrievers) - RETRIEVER_NAMES.keys() or set(chunkers) - CHUNKERS.keys():
         sys.exit(f"모르는 검색기·자르기: {sorted((set(retrievers) - RETRIEVER_NAMES.keys()) | (set(chunkers) - CHUNKERS.keys()))}")
-    texts = system_texts(a.kdp, a.compare, {q["doc_id"] for q in questions})
+    texts = system_texts(a.kdp, a.compare, {q["doc_id"] for q in questions}, variants=parse_variants(a.variant))
     if not texts:
         sys.exit("평가할 계통이 없다")
     dense = Dense(a.model, a.device) if "bge-m3" in retrievers else None

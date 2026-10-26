@@ -530,6 +530,60 @@ def regroup(header: tuple[str, int], pieces: list[tuple[str, int]], max_chars: i
     return out
 
 
+def _expand(html: str) -> list[list[str]]:
+    """표 HTML → 칸 글 격자 — 세로·가로 병합 칸의 글을 차지한 자리마다 되풀이한다(행 하나만 떼어도 읽히게)."""
+    rows = _ROW.findall(html)
+    grid: dict[tuple[int, int], str] = {}
+    width = 0
+    for r, row in enumerate(rows):
+        c = 0
+        for m in _CELL.finditer(row):
+            while (r, c) in grid:
+                c += 1
+            cs, rs = max(_span(m.group(2), "colspan"), 1), max(_span(m.group(2), "rowspan"), 1)
+            text = " ".join(htmllib.unescape(re.sub(r"<[^>]+>", " ", m.group(3))).split())
+            for rr in range(r, min(r + rs, len(rows))):
+                for cc in range(c, c + cs):
+                    grid[(rr, cc)] = text
+            c += cs
+            width = max(width, c)
+    return [[grid.get((r, c), "") for c in range(width)] for r in range(len(rows))]
+
+
+def _pipe(cells: list[str], width: int) -> str:
+    cells = cells + [""] * (width - len(cells))
+    return "| " + " | ".join(c.replace("|", "\\|") for c in cells) + " |"
+
+
+def pipe_regroup(header: tuple[str, int], pieces: list[tuple[str, int]], max_chars: int) -> list[str]:
+    """regroup 과 같은 묶음을 HTML 대신 파이프 표로(D21 — RAG 적재용 표의 가벼운 꼴). 병합 칸은 풀어 행마다 칸 글을 되풀이하고,
+    머리행 여러 줄은 열마다 위에서 아래로 다른 글만 ' · ' 로 이어 한 줄로 합친다. 머리행이 없으면 칸 이름 줄·구분 줄 없이 행만."""
+    html, n_head = header
+    top = _expand(html)[:n_head]
+    body = [row for h, skip in pieces for row in _expand(h)[skip:]]
+    width = max(map(len, top + body), default=0)
+    names = []
+    for c in range(width):
+        parts = []
+        for row in top:
+            t = row[c] if c < len(row) else ""
+            if t and (not parts or parts[-1] != t):
+                parts.append(t)
+        names.append(" · ".join(parts))
+    head = [_pipe(names, width), "|" + "---|" * width] if top else []
+    rows = [_pipe(r, width) for r in body]
+    if not rows:
+        return ["\n".join(head)] if head else []
+    out, lo = [], 0
+    while lo < len(rows):
+        hi = lo + 1
+        while hi < len(rows) and len("\n".join(head + rows[lo:hi + 1])) <= max_chars:
+            hi += 1
+        out.append("\n".join(head + rows[lo:hi]))
+        lo = hi
+    return out
+
+
 def _is_mark(b: Block) -> bool:
     return bool(b.text) and bool(CONT.fullmatch("".join(b.text.split())))
 

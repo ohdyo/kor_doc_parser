@@ -25,8 +25,8 @@ import sys
 import time
 from pathlib import Path
 
-from rag_eval import (NAMES, P_TOKENS, QUESTIONS, TYPES, Dense, frac, hit, intro, load_questions, norm, summarize,
-                      system_texts)
+from rag_eval import (NAMES, P_TOKENS, QUESTIONS, TYPES, Dense, frac, hit, intro, load_questions, norm, parse_variants,
+                      summarize, system_texts)
 
 RUNS = "kdp_rag:512,kdp:512,paddle_default:512,kdp_rag:1200"
 MODES = ("naive", "mix")
@@ -50,15 +50,19 @@ KO_ENTITY_TYPES = """각 엔티티를 아래 종류 가운데 하나로 분류�
 사람 이름(담당자·기관장 같은 개인)은 엔티티로 뽑지 않는다. 직책이 필요하면 기관 엔티티의 설명에 직책만 쓴다."""
 
 
-def parse_runs(spec: str) -> list[tuple[str, int]]:
-    """'계통:토큰,…' → [(계통, 토큰)]."""
+def parse_runs(spec: str, names=NAMES) -> list[tuple[str, int, str]]:
+    """'계통:토큰[:R],…' → [(계통, 토큰, 자르기)] — 자르기는 F(고정 토큰, ainsert 기본) 또는 R(구조 자르기 — LangChain 재귀 분할)."""
     out = []
     for item in (x.strip() for x in spec.split(",") if x.strip()):
-        name, _, tokens = item.partition(":")
-        if name not in NAMES or not tokens.isdigit():
+        name, tokens, strategy = (item.split(":") + ["F"])[:3]
+        if name not in names or not tokens.isdigit() or strategy not in ("F", "R"):
             sys.exit(f"--runs 가 잘못됐다: {item}")
-        out.append((name, int(tokens)))
+        out.append((name, int(tokens), strategy))
     return out
+
+
+def run_label(name: str, tokens: int, strategy: str) -> str:
+    return f"{name}:{tokens}" + (":R" if strategy == "R" else "")
 
 
 def chunk_rank(chunks: list[dict], doc: str, evidence: list[list[str]]) -> int | None:
@@ -93,7 +97,7 @@ def store_stats(d: Path, ids: list[str]) -> dict:
     return out
 
 
-async def open_store(name: str, tokens: int, d: Path, dense: Dense, a) -> object:
+async def open_store(name: str, d: Path, tokens: int, dense: Dense, a) -> object:
     from lightrag import LightRAG
     from lightrag.llm.openai import openai_complete_if_cache
     from lightrag.utils import EmbeddingFunc
@@ -115,7 +119,7 @@ async def open_store(name: str, tokens: int, d: Path, dense: Dense, a) -> object
     addon = {"language": "Korean"}
     if a.entity_types == "ko":
         addon["entity_types_guidance"] = KO_ENTITY_TYPES
-    rag = LightRAG(working_dir=str(d), workspace=f"{name}-{tokens}", vector_storage="NanoVectorDBStorage",
+    rag = LightRAG(working_dir=str(d), workspace=name, vector_storage="NanoVectorDBStorage",
                    chunk_token_size=tokens, chunk_overlap_token_size=a.overlap, entity_extract_max_gleaning=a.gleaning,
                    llm_model_func=llm, llm_model_name=a.llm_model, llm_model_max_async=a.llm_async,
                    embedding_func=EmbeddingFunc(embedding_dim=1024, max_token_size=8192, func=embed, model_name="bge-m3"),
@@ -144,17 +148,23 @@ async def ask(rag, questions: list[dict], modes: list[str], top_k: int, chunk_to
 
 async def run(questions: list[dict], texts: dict[str, dict[str, str]], keys: dict[str, str], dense: Dense, a) -> tuple[list, dict]:
     rows, builds = [], {}
-    for name, tokens in a.runs:
-        label, docs = f"{name}:{tokens}", texts[name]
-        d = a.work / f"{name}-{tokens}"
+    for name, tokens, strategy in a.runs:
+        label, docs = run_label(name, tokens, strategy), texts[name]
+        store = label.replace(":", "-")
+        d = a.work / store
         if not a.reuse:
             shutil.rmtree(d, ignore_errors=True)
         d.mkdir(parents=True, exist_ok=True)
-        rag = await open_store(name, tokens, d, dense, a)
+        rag = await open_store(store, d, tokens, dense, a)
         try:
             ids = sorted(docs)
             t = time.perf_counter()
-            await rag.ainsert([docs[i] for i in ids], ids=ids, file_paths=[keys[i] for i in ids])
+            if strategy == "R":                # SDK ainsert 는 F 만 — 문서마다 process_options 로 R 을 골라 넣는다(서버 넣기 경로와 같다)
+                await rag.apipeline_enqueue_documents([docs[i] for i in ids], ids=ids, file_paths=[keys[i] for i in ids],
+                                                      process_options=["R"] * len(ids))
+                await rag.apipeline_process_enqueue_documents()
+            else:
+                await rag.ainsert([docs[i] for i in ids], ids=ids, file_paths=[keys[i] for i in ids])
             builds[label] = {"seconds": round(time.perf_counter() - t, 1), **store_stats(d, ids)}
             print(f"{label} 넣기 {builds[label]}", file=sys.stderr)
             rows += [{**r, "run": label} for r in await ask(rag, questions, a.modes, a.top_k, a.chunk_top_k)]
@@ -164,8 +174,8 @@ async def run(questions: list[dict], texts: dict[str, dict[str, str]], keys: dic
 
 
 def run_name(label: str) -> str:
-    name, _, tokens = label.partition(":")
-    return f"{NAMES[name]} · {int(tokens):,}토큰"
+    name, tokens, strategy = (label.split(":") + ["F"])[:3]
+    return f"{NAMES.get(name, name)} · {int(tokens):,}토큰" + (" · R 구조 자르기" if strategy == "R" else "")
 
 
 def render(summary: dict, builds: dict, questions: list[dict], labels: list[str], modes: list[str], a, dense_name: str) -> str:
@@ -200,7 +210,8 @@ def main(argv=None) -> None:
     ap.add_argument("--questions", type=Path, default=QUESTIONS)
     ap.add_argument("--work", type=Path, required=True, help="LightRAG 저장소 폴더(실행마다 하위 폴더)")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--runs", default=RUNS, help="'계통:청크 토큰' 목록")   # 그래프는 실행마다 LLM 추출이라 넷만 기본으로
+    ap.add_argument("--runs", default=RUNS, help="'계통:청크 토큰[:R]' 목록 — R 은 구조 자르기")   # 그래프는 실행마다 LLM 추출이라 넷만 기본으로
+    ap.add_argument("--variant", action="append", help="'이름=폴더' — 다른 설정으로 다시 조립한 kdp 출력을 계통으로(eval/rag_eval.py 와 같다)")
     ap.add_argument("--modes", default=",".join(MODES))
     ap.add_argument("--overlap", type=int, default=100)
     ap.add_argument("--gleaning", type=int, default=1)
@@ -216,14 +227,16 @@ def main(argv=None) -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--reuse", action="store_true", help="저장소를 지우지 않는다(같은 글로 다시 물을 때만)")
     a = ap.parse_args(argv)
-    a.runs, a.modes = parse_runs(a.runs), [m for m in a.modes.split(",") if m]
+    variants = parse_variants(a.variant)
+    a.runs, a.modes = parse_runs(a.runs, {**NAMES, **variants}), [m for m in a.modes.split(",") if m]
     import lightrag.utils  # noqa: F401  — 불러올 때 lightrag 로그를 INFO 로 두므로 그 뒤에 낮춘다
 
     logging.getLogger("lightrag").setLevel(logging.WARNING)
     questions = load_questions(a.questions)
     keys = {q["doc_id"]: q["doc"] for q in questions}
-    texts = system_texts(a.kdp, a.compare, set(keys), list(dict.fromkeys(n for n, _ in a.runs)))
-    a.runs = [(n, t) for n, t in a.runs if n in texts]
+    texts = system_texts(a.kdp, a.compare, set(keys), [n for n in dict.fromkeys(n for n, _, _ in a.runs) if n not in variants],
+                         {n: p for n, p in variants.items() if n in {r[0] for r in a.runs}})
+    a.runs = [r for r in a.runs if r[0] in texts]
     if not a.runs:
         sys.exit("평가할 계통이 없다")
     dense = Dense(a.model, a.device)
@@ -231,7 +244,7 @@ def main(argv=None) -> None:
     summary = summarize(rows, key=("mode", "run"))
     for name, x in summary.items():
         x["in_graph"] = sum(r["in_graph"] for r in rows if f"{r['mode']}|{r['run']}" == name)
-    labels = [f"{n}:{t}" for n, t in a.runs]
+    labels = [run_label(*r) for r in a.runs]
     report = render(summary, builds, questions, labels, a.modes, a, dense.name)
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "report.md").write_text(report + "\n", encoding="utf-8")

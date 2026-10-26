@@ -12,7 +12,7 @@ DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 |
 if [ "$DRIVER" -ge 580 ]; then TB=(); else TB=(--torch-backend cu129); fi   # setup_envs.sh 와 같은 기준 — 580 미만은 CUDA 12.9 판
 uv venv "$ENVS/kdp-rag" --python 3.12
 VIRTUAL_ENV="$ENVS/kdp-rag" uv pip install "${TB[@]}" "torch==2.13.0" "transformers>=4.57,<4.58" "lightrag-hku==1.5.7" \
-  "openai>=2,<4" "tiktoken>=0.7" pyyaml numpy
+  "openai>=2,<4" "tiktoken>=0.7" "langchain-text-splitters>=0.3,<2" pyyaml numpy   # LightRAG R 전략(구조 자르기)
 uv venv "$ENVS/kdp-docling" --python 3.12
 VIRTUAL_ENV="$ENVS/kdp-docling" uv pip install --torch-backend cpu "docling==2.138.0" "pypdfium2==5.14.0" "pydantic>=2.5" \
   "PyYAML>=6.0" "typer>=0.12" numpy Pillow

@@ -1,5 +1,5 @@
 """표(기획서 4.3 규칙 1·6·13, D18) — 머리행, 제목·단위·출처 연결, 표 갈래, '이하 빈칸', 쪽 넘김 표."""
-from kdp.assemble.tables import appendage, header_rows, merge_tables, parse_rows, regroup, tables
+from kdp.assemble.tables import appendage, header_rows, merge_tables, parse_rows, pipe_regroup, regroup, tables
 from kdp.classify.blocks import classify_blocks
 from kdp.config import Classify, QCCfg
 from kdp.qc.checks import run_checks
@@ -690,3 +690,18 @@ def test_regroup_joins_continued_pieces_without_repeated_header():
         '<table border="1"><tr><th colspan="2">지점별 기온</th></tr><tr><td>충주</td><td>25.1</td></tr></table>']
     only = "<table><tr><td>합계</td></tr></table>"
     assert regroup((only, 1), [(only, 1)], 5) == [only]               # 남은 행이 없으면 머리행만 든 표 하나
+
+
+def test_pipe_regroup_expands_merged_cells_and_joins_header_rows():
+    """파이프 표(D21) — 병합 칸은 풀어 행마다 되풀이하고, 머리행 여러 줄은 열마다 다른 글만 ' · ' 로 이어 한 줄로. 칸 안 '|' 는 이스케이프."""
+    top = '<tr><th rowspan="2">구분</th><th colspan="2">기온</th></tr><tr><th>평균</th><th>최고</th></tr>'
+    html = (f'<table>{top}<tr><td rowspan="2">청주</td><td>26.0</td><td>31.2</td></tr><tr><td>25.1</td><td>30.0</td></tr>'
+            "<tr><td>충주</td><td>24.0</td><td>29|5</td></tr></table>")
+    head = "| 구분 | 기온 · 평균 | 기온 · 최고 |\n|---|---|---|"
+    rows = ["| 청주 | 26.0 | 31.2 |", "| 청주 | 25.1 | 30.0 |", "| 충주 | 24.0 | 29\\|5 |"]
+    assert pipe_regroup((html, 2), [(html, 2)], 10_000) == [head + "\n" + "\n".join(rows)]
+    assert pipe_regroup((html, 2), [(html, 2)], len(head) + 1 + len(rows[0])) == [head + "\n" + r for r in rows]   # 묶음마다 머리 줄
+    later = f"<table>{top}<tr><td>제천</td><td>23.0</td><td>28.0</td></tr></table>"   # 쪽 넘김 뒤 조각 — 되풀이 머리행 2줄을 뺀다
+    assert pipe_regroup((html, 2), [(later, 2)], 10_000) == [head + "\n| 제천 | 23.0 | 28.0 |"]
+    plain = "<table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table>"
+    assert pipe_regroup((plain, 0), [(plain, 0)], 10_000) == ["| a | b |\n| c |  |"]          # 머리행이 없으면 행만(빈 칸은 채움)
