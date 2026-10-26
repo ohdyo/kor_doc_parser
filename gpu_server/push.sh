@@ -27,6 +27,9 @@ if [ ${#SRC[@]} -gt 0 ]; then                         # 라벨러의 확대 사�
 fi
 rsync -az -e "$E" ~/.paddlex/official_models/PP-DocLayoutV3 ~/.paddlex/official_models/PP-LCNet_x1_0_doc_ori \
   "$DEST:/root/.paddlex/official_models/"
+if [ -d runs/t1/out_base ]; then                     # RAG 하류 평가(D21, rag_eval.sh)의 kdp 기준 출력 — test2~5 원래 A.X 파싱(raw 포함)
+  rsync -az -e "$E" --relative runs/t1/out_base "$DEST:/workspace/kor_doc_parser/"
+fi
 for pdf in "${PUBLIC[@]}"; do                        # 비교군 결과(텍스트 레이어·docling·PaddleOCR-VL 기본) — 서버에서 다시 돌리지 않게
   id=$(sha256sum "$pdf" | cut -c1-64)
   [ -d "out/$id/compare" ] && rsync -az -e "$E" --relative out/"$id"/compare/{textlayer,docling,paddle_default}.json \

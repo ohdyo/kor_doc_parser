@@ -450,6 +450,86 @@ def repeated_rows(a: list[list[Cell]], b: list[list[Cell]], head: int = 0) -> in
     return n
 
 
+@dataclass
+class _Slot:
+    """행 묶음으로 다시 쓸 칸 — 원래 태그·속성·안쪽 HTML 그대로, 차지하는 행 [top, bottom)과 시작 열."""
+    tag: str
+    attrs: str
+    inner: str
+    top: int
+    bottom: int
+    col: int
+
+
+_ROWSPAN = re.compile(r"""\s*rowspan\s*=\s*["']?\d+["']?""", re.I)
+_TABLE_TAG = re.compile(r"\s*(<table[^>]*>)", re.I)
+
+
+def _slots(html: str, skip: int = 0, offset: int = 0) -> tuple[int, list[_Slot]]:
+    """칸 자리 — 세로 병합이 차지한 자리를 건너 열을 센다(n_cols 와 같은 기준). 앞 skip 행은 빼고 남은 행을 offset 부터 센다
+    (뺀 행에서 내려온 세로 병합 칸은 남은 행만 차지한다). (남은 행 수, 칸)."""
+    rows = _ROW.findall(html)
+    taken: dict[int, set[int]] = {}
+    out = []
+    for r, row in enumerate(rows):
+        c = 0
+        for m in _CELL.finditer(row):
+            while c in taken.get(r, ()):
+                c += 1
+            cs = max(_span(m.group(2), "colspan"), 1)
+            end = min(r + max(_span(m.group(2), "rowspan"), 1), len(rows))
+            for rr in range(r, end):
+                taken.setdefault(rr, set()).update(range(c, c + cs))
+            if end > skip:
+                out.append(_Slot("t" + m.group(1).lower(), _ROWSPAN.sub("", m.group(2)), m.group(3),
+                                 offset + max(r, skip) - skip, offset + end - skip, c))
+            c += cs
+    return max(len(rows) - skip, 0), out
+
+
+def _rows_html(slots: list[_Slot], lo: int, hi: int) -> str:
+    """행 [lo, hi) 의 <tr> — 첫 행에는 위에서 내려온 세로 병합 칸을 다시 쓰고, 세로 병합은 hi 에서 자른다."""
+    out = []
+    for r in range(lo, hi):
+        cells = []
+        for s in sorted((s for s in slots if s.top == r or (r == lo and s.top < lo < s.bottom)), key=lambda s: s.col):
+            n = min(s.bottom, hi) - r
+            span = f' rowspan="{n}"' if n > 1 else ""
+            cells.append(f"<{s.tag}{span}{s.attrs}>{s.inner}</{s.tag}>")
+        out.append("<tr>" + "".join(cells) + "</tr>")
+    return "".join(out)
+
+
+def regroup(header: tuple[str, int], pieces: list[tuple[str, int]], max_chars: int) -> list[str]:
+    """표를 행 묶음 표들로 다시 쓴다(D21 — RAG 적재용 마크다운). header = (머리행이 든 표 HTML, 머리행 수), pieces = [(표 HTML,
+    앞에서 뺄 행 수)] — 쪽 넘김 표면 첫 조각은 머리행만큼, 뒤 조각은 되풀이한 머리행만큼 뺀다. 남은 행을 이어 묶음마다 머리행을
+    앞에 두고, 묶음 HTML 이 max_chars 를 넘기 전에 끊는다(행 하나로 넘으면 그 행만). 세로 병합 칸이 경계에 걸리면 두 묶음에
+    나눠 쓴다(글은 되풀이). 남은 행이 없으면 머리행만 든 표 하나."""
+    html, n_head = header
+    tag = m.group(1) if (m := _TABLE_TAG.match(html)) else "<table>"
+    rows, cells = _slots(html)
+    head = _rows_html(cells, 0, min(n_head, rows))
+    slots, n = [], 0
+    for h, skip in pieces:
+        k, s = _slots(h, skip, n)
+        slots += s
+        n += k
+
+    def table(lo: int, hi: int) -> str:
+        return tag + head + _rows_html(slots, lo, hi) + "</table>"
+
+    if not n:
+        return [tag + head + "</table>"]
+    out, lo = [], 0
+    while lo < n:
+        hi = lo + 1
+        while hi < n and len(table(lo, hi + 1)) <= max_chars:
+            hi += 1
+        out.append(table(lo, hi))
+        lo = hi
+    return out
+
+
 def _is_mark(b: Block) -> bool:
     return bool(b.text) and bool(CONT.fullmatch("".join(b.text.split())))
 

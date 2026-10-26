@@ -34,7 +34,7 @@ from .io.write import read_json, read_json_gz, write_json, write_json_gz, write_
 from .prep import nup
 from .prep.orient import is_scan, judge, layerless
 from .qc.checks import run_checks
-from .render_md import render_markdown
+from .render_md import render_markdown, render_rag_markdown
 from .schema import Document, ParserInfo, Source
 from .textlayer.extract import apply_text_layer, display_chars, mark_hidden
 
@@ -230,6 +230,11 @@ def write_outputs(doc: Document, doc_dir: Path, out: OutputCfg) -> None:
         write_text(md, doc.markdown)
     else:
         md.unlink(missing_ok=True)
+    rag = doc_dir / "document.rag.md"                  # RAG 적재용(D21) — 정본에 넣지 않고 정본에서 바로 만든다
+    if out.write_rag_markdown:
+        write_text(rag, render_rag_markdown(doc, out.rag_table_chars))
+    else:
+        rag.unlink(missing_ok=True)
     jsonl = doc_dir / "blocks.jsonl"
     if out.write_jsonl:
         write_jsonl(jsonl, jsonl_rows(doc))

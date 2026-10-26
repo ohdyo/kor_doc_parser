@@ -4,7 +4,7 @@ import re
 import pytest
 
 from kdp.assemble.order import kept
-from kdp.render_md import render_markdown
+from kdp.render_md import render_markdown, render_rag_markdown
 from kdp.schema import Block, Document, Page, ParserInfo, Source
 
 ANCHOR = re.compile(r'^<a id="([^"]+)"></a>$', re.M)
@@ -250,3 +250,124 @@ def test_continued_fragment_in_other_section_stays_in_place():
                       '<!-- page 2 -->\n\n<a id="p2.b01"></a>\n### □ 사업비 집행 현황(계속)\n\n'
                       f'<a id="p2.b02"></a>\n{_tbl(2)}\n\n<a id="p2.b03"></a>\n집행률은 계획 대비 87% 수준이다.\n')
     assert ANCHOR.findall(md(s1)) == ["p1.b01", "p1.b02", "p2.b02", "p2.b01", "p2.b03"]
+
+
+# ---- RAG 적재용 마크다운(D21) ----
+
+def test_rag_markdown_same_words_as_document_md_for_text():
+    """글·제목·항목·수식·쪽 넘김 문단만 든 문서는 document.md 와 같은 글이다 — 앵커가 빠지고(쪽 주석은 둔다), 항목을 들여쓰지 않고,
+    블록 첫 줄은 새 문단 첫 줄로 막는다(앵커가 없으면 첫 줄이 새 문단을 연다: 어느 번호든 목록, 4칸 들여쓰기는 코드, '[…]:' 는
+    링크 정의)."""
+    doc = _doc(_page(1, ("doc_title", "결과 보고서", {"heading_level": 0}), ("paragraph_title", "1. 추진 배경", {"heading_level": 1}),
+                     ("text", "□ 추진 배경", {"list_level": 1}), ("text", "○ 시스템 노후화로\n잦은 장애", {"list_level": 2}),
+                     ("text", "\n".join([s for s, _ in ESCAPES] + PLAIN)), ("display_formula", "E = mc^2"),
+                     ("text", "시스템은 민원 접수 처리를 돕고"), ("header", "머리말", {"keep": False, "drop_reason": "header"})),
+               _page(2, ("text", "문서관리 기능을 제공한다.", {"continues_from": "p1.b07"}), ("paragraph_title", "주요 내용"),
+                     ("text", "- 세부 내용", {"list_level": 3}), ("text", "2. 추진 일정"), ("text", "[표 1]: 현황")))
+    rag = render_rag_markdown(doc)
+
+    def plain(md):                                 # 앵커·줄 머리 공백·이스케이프를 떼면 같은 글
+        return re.sub(r"\\(?=[^\w\s])", "", re.sub(r"(?m)^ +", "", re.sub(r'<a id="[^"]+"></a>\n', "", md)))
+
+    assert plain(rag) == plain(render_markdown(doc))
+    assert "<a id=" not in rag and rag.count("<!-- page") == 2 and "○ 시스템 노후화로\n잦은 장애" in rag   # 들여쓰지 않는다
+    assert _chunks(rag)[-3:] == ["\\- 세부 내용", "2\\. 추진 일정", "\\[표 1]: 현황"]
+    markdown_it = pytest.importorskip("markdown_it")
+    html = markdown_it.MarkdownIt("commonmark").enable("table").render(rag)
+    assert re.findall(r"<(h\d|ol|ul|blockquote|hr|pre|table)\b", html) == ["h1", "h2"]   # 글 줄이 목록·코드·표로 읽히지 않는다
+    assert "[표 1]: 현황" in html and render_rag_markdown(_doc()) == ""
+
+
+def test_rag_markdown_captions_and_figures_in_one_block():
+    """표·그림 제목은 제자리에서 빠져 표·그림 바로 앞에 붙고, 그림 하나(제목·링크·설명·그림 속 글자)는 빈 줄 없는 한 덩이다.
+    링크 이름은 한국어, 그림 속 글자는 울타리 없이 '그림 속 글자:' 줄로(이어지는 줄은 문단 이어짐 줄처럼 이스케이프)."""
+    doc = _doc(_page(1, ("figure_title", "<표 1> 사업비 현황"), ("text", "(단위: 천원)"),
+                     ("table", None, {"html": TABLE, "caption_id": "p1.b01", "unit": "천원", "header_rows": 1,
+                                      "route": "html", "img_path": "imgs/p1.b03.png"}),
+                     ("chart", None, {"img_path": "imgs/p1.b04.png", "figure_text": "기온(℃)\n- 23.1", "route": "image",
+                                      "caption_id": "p1.b05", "figure_desc": "남서쪽이 23.1℃로 가장 높다."}),
+                     ("figure_title", "[그림 1] 평균기온 분포"),
+                     ("image", None, {"img_path": "imgs/p1.b06.png"})))
+    rag = render_rag_markdown(doc)
+    assert _chunks(rag)[1:] == ["(단위: 천원)", "<표 1> 사업비 현황\n" + TABLE,
+                                "[그림 1] 평균기온 분포\n![도표](imgs/p1.b04.png)\n그림 설명: 남서쪽이 23.1℃로 가장 높다.\n"
+                                "그림 속 글자: 기온(℃)\n\\- 23.1",
+                                "![그림](imgs/p1.b06.png)"]
+    assert rag.count("사업비 현황") == 1 and rag.count("평균기온 분포") == 1
+    markdown_it = pytest.importorskip("markdown_it")
+    html = markdown_it.MarkdownIt("commonmark").enable("table").render(rag)
+    assert re.findall(r"<(h\d|ol|ul|blockquote|hr|pre|table)\b", html) == ["table"]   # 그림 속 글자 줄이 목록·코드가 되지 않는다
+    failed = render_rag_markdown(_doc(_page(1, ("table", None, {"html": TABLE, "route": "image", "route_reason": "photo_in_cell",
+                                                                "img_path": "imgs/p1.b01.png", "figure_text": "사진 속 글자"}))))
+    assert _chunks(failed)[1:] == ["![표](imgs/p1.b01.png)\n그림 속 글자: 사진 속 글자\n" + TABLE]   # 이미지 갈래 표는 나누지 않는다
+    assert "<img" in markdown_it.MarkdownIt("commonmark").render(failed)   # 표 HTML 을 뒤에 — HTML 블록이 링크 줄을 삼키지 않게
+
+
+def test_rag_markdown_long_table_rows_repeat_header_and_title():
+    """긴 표는 행 묶음으로 — 묶음마다 머리행, 뒤 묶음 앞에는 '제목 (계속)'과 단위."""
+    def row(i):
+        return f"<tr><td>지점{i}</td><td>{i}.5</td></tr>"
+
+    head = "<table><tr><th>지점</th><th>기온</th></tr>"
+    html = head + "".join(map(row, range(1, 7))) + "</table>"
+    doc = _doc(_page(1, ("figure_title", "<표 2> 지점별 기온"),
+                     ("table", None, {"html": html, "caption_id": "p1.b01", "unit": "℃", "header_rows": 1})))
+    assert _chunks(render_rag_markdown(doc))[1:] == ["<표 2> 지점별 기온\n" + html]     # 한도 안이면 그대로
+    small = len(head) + 2 * len(row(1)) + len("</table>")
+    assert _chunks(render_rag_markdown(doc, small))[1:] == [
+        "<표 2> 지점별 기온\n" + head + row(1) + row(2) + "</table>",
+        "<표 2> 지점별 기온 (계속) (단위: ℃)\n" + head + row(3) + row(4) + "</table>",
+        "<표 2> 지점별 기온 (계속) (단위: ℃)\n" + head + row(5) + row(6) + "</table>"]
+
+
+def test_rag_markdown_continued_table_joined_and_lone_piece_gets_header():
+    """쪽 넘김 표는 한 표로 잇고(뒤 조각의 되풀이 머리행은 뺀다), 섹션이 달라 따로 나가는 뒤 조각은 첫 조각의 머리행과
+    '제목 (계속)' 을 받는다."""
+    a = "<table><tr><th>지점</th><th>기온</th></tr><tr><td>청주</td><td>26.0</td></tr></table>"
+    b = "<table><tr><th>지점</th><th>기온</th></tr><tr><td>충주</td><td>25.1</td></tr></table>"
+    joined = "<table><tr><th>지점</th><th>기온</th></tr><tr><td>청주</td><td>26.0</td></tr><tr><td>충주</td><td>25.1</td></tr></table>"
+    md = render_rag_markdown(_doc(_page(1, ("figure_title", "<표 3> 기온"),
+                                        ("table", None, {"html": a, "caption_id": "p1.b01", "header_rows": 1})),
+                                  _page(2, ("table", None, {"html": b, "continues_from": "p1.b02", "header_rows": 1}),
+                                        ("text", "표 뒤 글"))))
+    assert md == "<!-- page 1 -->\n\n<표 3> 기온\n" + joined + "\n\n<!-- page 2 -->\n\n표 뒤 글\n"
+    s1, s2 = ["1. 기온"], ["1. 기온(계속)"]
+    lone = render_rag_markdown(_doc(
+        _page(1, ("figure_title", "<표 3> 기온", {"section_path": s1}),
+              ("table", None, {"html": a, "caption_id": "p1.b01", "header_rows": 1, "section_path": s1})),
+        _page(2, ("paragraph_title", "1. 기온(계속)", {"heading_level": 1, "section_path": s2}),
+              ("table", None, {"html": b, "continues_from": "p1.b02", "header_rows": 1, "section_path": s2}))))
+    assert _chunks(lone)[1:] == ["<표 3> 기온\n" + a, "<!-- page 2 -->", "## 1. 기온(계속)", "<표 3> 기온 (계속)\n" + b]
+
+
+def test_rag_markdown_continued_table_header_from_repeated_rows():
+    """첫 조각의 머리행을 못 찾은 쪽 넘김 표(연도 머리글이라 header_rows 없음)도, 뒤 조각이 되풀이한 행(merge_tables 가 단 뒤 조각의
+    header_rows)을 머리행으로 받는다 — 따로 나가는 뒤 조각과 긴 표의 뒤 묶음 모두."""
+    top = "<tr><td>구분</td><td>2024</td><td>2025</td></tr>"
+    a = f"<table>{top}<tr><td>청주</td><td>26.0</td><td>25.1</td></tr></table>"
+    b = f"<table>{top}<tr><td>충주</td><td>25.1</td><td>24.0</td></tr></table>"
+    s1, s2 = ["1. 기온"], ["1. 기온(계속)"]
+    lone = render_rag_markdown(_doc(
+        _page(1, ("figure_title", "<표 3> 기온", {"section_path": s1}),
+              ("table", None, {"html": a, "caption_id": "p1.b01", "section_path": s1})),
+        _page(2, ("paragraph_title", "1. 기온(계속)", {"heading_level": 1, "section_path": s2}),
+              ("table", None, {"html": b, "continues_from": "p1.b02", "header_rows": 1, "section_path": s2}))))
+    assert _chunks(lone)[-1] == "<표 3> 기온 (계속)\n" + b                 # 칸 이름 행이 남는다
+    joined = render_rag_markdown(_doc(_page(1, ("table", None, {"html": a})),
+                                      _page(2, ("table", None, {"html": b, "continues_from": "p1.b01", "header_rows": 1}))), len(a))
+    assert _chunks(joined)[1:] == [a, b, "<!-- page 2 -->"]                # 뒤 묶음도 칸 이름 행부터
+
+
+def test_rag_markdown_chain_with_image_piece():
+    """쪽 넘김 사슬 가운데 이미지 갈래 조각이 끼어도 뒤 조각들은 '제목 (계속)'을 받고, 표 조각은 사슬 첫 조각의 머리행을 받는다."""
+    a = "<table><tr><th>지점</th><th>기온</th></tr><tr><td>청주</td><td>26.0</td></tr></table>"
+    c = "<table><tr><td>제천</td><td>24.2</td></tr></table>"
+    md = render_rag_markdown(_doc(
+        _page(1, ("figure_title", "<표 4> 기온"), ("table", None, {"html": a, "caption_id": "p1.b01", "header_rows": 1})),
+        _page(2, ("table", None, {"html": TABLE, "continues_from": "p1.b02", "route": "image", "route_reason": "failed",
+                                  "img_path": "imgs/p2.b01.png"})),
+        _page(3, ("table", None, {"html": c, "continues_from": "p2.b01"}))))
+    assert _chunks(md)[1:] == ["<표 4> 기온\n" + a,
+                               "<표 4> 기온 (계속)\n![표](imgs/p2.b01.png)\n" + TABLE,
+                               "<표 4> 기온 (계속)\n<table><tr><th>지점</th><th>기온</th></tr><tr><td>제천</td><td>24.2</td></tr></table>",
+                               "<!-- page 2 -->", "<!-- page 3 -->"]

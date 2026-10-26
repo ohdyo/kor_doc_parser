@@ -62,7 +62,7 @@ flowchart LR
     det --> vlm["블록 인식<br/>PaddleOCR-VL-1.6 (vLLM)<br/>훅 A~D"]
     vlm --> raw[("raw/<br/>엔진 원시 결과")]
     raw -->|"parse 때, 또는 kdp reassemble(GPU 없이)"| asm["조립 규칙<br/>글자층 · 정규화 · 잡요소·쪽 판정<br/>표 · 제목·항목 수준 · 그림 글<br/>메타 · 개인정보 · QC"]
-    asm --> out["document.json · blocks.jsonl<br/>document.md · imgs/"]
+    asm --> out["document.json · blocks.jsonl<br/>document.md · document.rag.md · imgs/"]
     asm -.->|"그림과 함께 봐야 하는 그림"| desc["그림 설명<br/>A.X-4.0-VL-Light<br/>근거 검사 · 확신도 거르기"]
     desc -.-> out
 ```
@@ -304,6 +304,7 @@ out/<문서 해시>/
 ├── document.json   # 정본 — 쪽·블록 전체(버린 블록도 이유와 함께), 문서 메타, QC
 ├── blocks.jsonl    # 청킹용 — 살린 블록만 한 줄에 하나
 ├── document.md     # 마크다운 — 표는 HTML, 그림은 이미지와 그림 속 글자·설명
+├── document.rag.md # RAG 적재용 마크다운(LightRAG 등 길이로 자르는 도구) — 앵커 없음, 표·그림 제목을 앞에, 긴 표는 머리행 되풀이 행 묶음
 ├── imgs/           # 표·그림 크롭
 └── raw/            # 엔진 원시 결과·그림 설명 응답(재조립용)
 ```

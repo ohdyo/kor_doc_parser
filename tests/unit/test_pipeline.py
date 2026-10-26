@@ -35,7 +35,9 @@ def test_outputs_schema_jsonl_and_reassemble(tmp_path, korean_font, settings):
     assert sorted(p.name for p in (d / "imgs").iterdir()) == ["p1.b04.png", "p2.b04.png", "p3.b04.png"]
     assert not (d / "raw.tmp").exists()
 
-    before = {f: (d / f).read_bytes() for f in ("document.json", "blocks.jsonl")}
+    rag = (d / "document.rag.md").read_text(encoding="utf-8")            # RAG 적재용(D21) — 앵커 없이 쪽 주석만
+    assert "<!-- page 1 -->" in rag and "<a id=" not in rag
+    before = {f: (d / f).read_bytes() for f in ("document.json", "blocks.jsonl", "document.rag.md")}
     reassemble(d, settings)
     assert {f: (d / f).read_bytes() for f in before} == before
 
@@ -86,7 +88,7 @@ def test_figure_description_parse_reassemble_describe(tmp_path, korean_font, set
         assert len(vlm.requests) == 2 and doc.qc.undescribed_figures == 0
         rows = [json.loads(line) for line in (d / "blocks.jsonl").read_text(encoding="utf-8").splitlines()]
         assert [r["figure_desc"] for r in rows if r["type"] == "chart"] == ["남서쪽이 23.1℃로 가장 높다."] * 2
-        before = {f: (d / f).read_bytes() for f in ("document.json", "blocks.jsonl", "document.md")}
+        before = {f: (d / f).read_bytes() for f in ("document.json", "blocks.jsonl", "document.md", "document.rag.md")}
         s.env.describer.server_url = None                                         # 재조립은 기록만 읽는다
         reassemble(d, s)
         assert {f: (d / f).read_bytes() for f in before} == before

@@ -114,7 +114,8 @@ def _docling_struct(item, doc) -> dict:
 
 
 def run_docling(pdf: Path, settings) -> dict:
-    """docling 기본 파이프라인, OCR 끔(기획서 A.3 과 같은 설정). furniture 층은 본문이 아니다."""
+    """docling 기본 파이프라인, OCR 끔(기획서 A.3 과 같은 설정). furniture 층은 본문이 아니다. 기본 마크다운도 남긴다(RAG 하류
+    평가 eval/rag_eval.py — D21)."""
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -145,7 +146,7 @@ def run_docling(pdf: Path, settings) -> dict:
         else:
             b = _blk("text", box, body, getattr(item, "text", ""), item.label.value, **_docling_struct(item, doc))
         pages.setdefault(prov.page_no, []).append(b)
-    return {"seconds": time.perf_counter() - t, "pages": pages}
+    return {"seconds": time.perf_counter() - t, "pages": pages, "markdown": doc.export_to_markdown()}
 
 
 def paddle_title_level(label: str, content: str) -> int | None:
@@ -163,7 +164,8 @@ def paddle_title_level(label: str, content: str) -> int | None:
 
 
 def run_paddle_default(pdf: Path, settings) -> dict:
-    """PaddleOCR-VL 기본 설정 그대로 — 우리 설정 사본·훅·규칙 없이(장치·VLM 서버만 env.yaml). 본문 = 기본 마크다운에 들어가는 블록."""
+    """PaddleOCR-VL 기본 설정 그대로 — 우리 설정 사본·훅·규칙 없이(장치·VLM 서버만 env.yaml). 본문 = 기본 마크다운에 들어가는 블록.
+    쪽마다 기본 마크다운(markdown_texts)도 남긴다(RAG 하류 평가 eval/rag_eval.py — D21)."""
     apply_env(settings.env)
     from paddleocr import PaddleOCRVL
 
@@ -192,7 +194,7 @@ def run_paddle_default(pdf: Path, settings) -> dict:
                                heading=lv is not None, heading_level=lv))
         pages[i + 1] = blocks
     doc.close()
-    return {"seconds": seconds, "pages": pages}
+    return {"seconds": seconds, "pages": pages, "markdown": [r.markdown.get("markdown_texts", "") for r in results]}
 
 
 def load_kdp(doc_dir: Path) -> dict:

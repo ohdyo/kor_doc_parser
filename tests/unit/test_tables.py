@@ -1,5 +1,5 @@
 """표(기획서 4.3 규칙 1·6·13, D18) — 머리행, 제목·단위·출처 연결, 표 갈래, '이하 빈칸', 쪽 넘김 표."""
-from kdp.assemble.tables import appendage, header_rows, merge_tables, parse_rows, tables
+from kdp.assemble.tables import appendage, header_rows, merge_tables, parse_rows, regroup, tables
 from kdp.classify.blocks import classify_blocks
 from kdp.config import Classify, QCCfg
 from kdp.qc.checks import run_checks
@@ -662,3 +662,31 @@ def test_absorbed_lines_are_not_captions():
     doc.pages[0].blocks[1].provenance = [{"rule": "no_layer_chars"}]
     b = tables(doc).pages[0].blocks
     assert (b[1].merged_into, b[0].caption_id) == ("p1.b01", None)
+
+
+def test_regroup_repeats_header_and_splits_rowspan():
+    """행 묶음(D21) — 묶음마다 머리행을 앞에 두고, 경계에 걸린 세로 병합 칸은 두 묶음에 나눠 다시 쓴다."""
+    html = ('<table><tr><th>구분</th><th>값</th></tr><tr><td rowspan="3">가</td><td>1</td></tr><tr><td>2</td></tr>'
+            "<tr><td>3</td></tr><tr><td>나</td><td>4</td></tr></table>")
+    head = "<table><tr><th>구분</th><th>값</th></tr>"
+    first = head + '<tr><td rowspan="2">가</td><td>1</td></tr><tr><td>2</td></tr></table>'
+    second = head + "<tr><td>가</td><td>3</td></tr><tr><td>나</td><td>4</td></tr></table>"
+    assert regroup((html, 1), [(html, 1)], len(first)) == [first, second]
+    assert regroup((html, 1), [(html, 1)], 10_000) == [head + '<tr><td rowspan="3">가</td><td>1</td></tr><tr><td>2</td></tr>'
+                                                         "<tr><td>3</td></tr><tr><td>나</td><td>4</td></tr></table>"]
+    assert regroup((html, 1), [(html, 1)], 1) == [head + '<tr><td>가</td><td>1</td></tr></table>',   # 행 하나로 넘으면 그 행만
+                                                  head + "<tr><td>가</td><td>2</td></tr></table>",
+                                                  head + "<tr><td>가</td><td>3</td></tr></table>",
+                                                  head + "<tr><td>나</td><td>4</td></tr></table>"]
+
+
+def test_regroup_joins_continued_pieces_without_repeated_header():
+    a = '<table border="1"><tr><th colspan="2">지점별 기온</th></tr><tr><td>청주</td><td>26.0</td></tr></table>'
+    b = '<table><tr><th colspan="2">지점별 기온</th></tr><tr><td>충주</td><td>25.1</td></tr></table>'
+    assert regroup((a, 1), [(a, 1), (b, 1)], 10_000) == [
+        '<table border="1"><tr><th colspan="2">지점별 기온</th></tr><tr><td>청주</td><td>26.0</td></tr>'
+        "<tr><td>충주</td><td>25.1</td></tr></table>"]                  # 첫 조각의 여는 태그·머리행, 뒤 조각은 되풀이 머리행을 뺀다
+    assert regroup((a, 1), [(b, 1)], 10_000) == [                      # 따로 나가는 뒤 조각 — 첫 조각의 머리행만 빌린다
+        '<table border="1"><tr><th colspan="2">지점별 기온</th></tr><tr><td>충주</td><td>25.1</td></tr></table>']
+    only = "<table><tr><td>합계</td></tr></table>"
+    assert regroup((only, 1), [(only, 1)], 5) == [only]               # 남은 행이 없으면 머리행만 든 표 하나
