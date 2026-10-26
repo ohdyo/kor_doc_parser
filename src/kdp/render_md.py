@@ -32,7 +32,7 @@ _NUM_START = re.compile(r"^(\d{1,9})(?=[.)](?:[ \t]|$))")  # 문단 첫 줄의 �
 _LINK_DEF = re.compile(r"^( {0,3})(?=\[[^\]]*\]:)")         # 새 문단 첫 줄의 '[표 1]: 현황' 은 링크 참조 정의로 읽혀 사라진다
 ALT = {"chart": "도표", "table": "표", "seal": "도장"}    # RAG 마크다운의 크롭 링크 이름 — 그 밖의 그림은 '그림'
 FIGURE_TEXT = "그림 속 글자: "                             # RAG 마크다운에서 울타리 대신 그림 속 글자 앞에 붙이는 말
-RAG_TABLE_CHARS = 400                                      # 이보다 긴 표 HTML 은 행 묶음으로(설정 output.rag_table_chars)
+RAG_TABLE_CHARS = 400                                      # 이보다 긴 표는 행 묶음으로(설정 output.rag_table_chars)
 
 
 def _lines(text: str) -> list[str]:
@@ -151,12 +151,13 @@ def render_markdown(doc: Document) -> str:
     return "\n\n".join(out) + "\n" if out else ""
 
 
-def render_rag_markdown(doc: Document, max_table_chars: int = RAG_TABLE_CHARS, table_format: str = "html") -> str:
+def render_rag_markdown(doc: Document, max_table_chars: int = RAG_TABLE_CHARS, table_format: str = "pipe") -> str:
     """RAG 적재용 마크다운(D21) — document.md 와 같은 블록·차례·글이되 마크다운만 받는 도구(길이로 자르는 청커)에 맞춘다.
     블록 앵커는 빼고 쪽 주석만 둔다. 표·그림 제목(caption_id)은 제자리에서 빼 표·그림 바로 앞에 붙이고, 블록 하나를 빈 줄 없는
     한 덩이로 낸다(제목·그림 링크·설명·그림 속 글자가 갈라지지 않게). 쪽 넘김 표는 한 표로 잇고, max_table_chars 보다 긴 표는
     행 묶음으로 나눠 묶음마다 머리행과 '제목 (계속)' 줄을 되풀이한다(4.1 — 표 뒷부분이 머리행 없는 청크가 되지 않게).
-    table_format 'pipe' 면 칸을 읽은 표를 HTML 대신 파이프 표로(병합 칸을 풀고 머리행을 한 줄로 — pipe_regroup)."""
+    table_format 'pipe'(기본 — 사용자 결정 2026-10-26)면 칸을 읽은 표를 HTML 대신 파이프 표로(병합 칸을 풀고 머리행을 한 줄로 —
+    pipe_regroup), 'html' 이면 표 HTML 그대로."""
     by_id = {b.id: b for _, b in kept(doc)}
     caps = _captions(by_id)
     moved = {c.id for c in caps.values()}

@@ -115,7 +115,7 @@ def test_lightrag_chunk_rank():
 
 
 def test_lightrag_runs_and_graph_hit():
-    assert lr.parse_runs("kdp_rag:512, kdp:1200:R") == [("kdp_rag", 512, "F"), ("kdp", 1200, "R")]
+    assert lr.parse_runs("kdp_rag:512, kdp:1200:F") == [("kdp_rag", 512, "R"), ("kdp", 1200, "F")]   # 넣기 기본은 R(구조 자르기)
     with pytest.raises(SystemExit):
         lr.parse_runs("kdp_rag:512:X")
     evidence = [[ev.norm("17.5")], [ev.norm("23.1")]]
@@ -142,4 +142,4 @@ def test_variant_system(tmp_path):
     with pytest.raises(SystemExit):
         ev.parse_variants(["kdp=x"])                                                   # 이미 있는 계통 이름
     assert lr.parse_runs("kdp_rag_pipe:512:R", {**ev.NAMES, **variants}) == [("kdp_rag_pipe", 512, "R")]
-    assert lr.run_label("kdp_rag", 512, "F") == "kdp_rag:512" and lr.run_name("kdp_rag_pipe:512:R").endswith("R 구조 자르기")
+    assert lr.run_label("kdp_rag", 512, "F") == "kdp_rag:512:F" and lr.run_name("kdp_rag_pipe:512:R").endswith("R 구조 자르기")

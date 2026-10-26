@@ -4,9 +4,10 @@
     python eval/rag_eval.py --kdp <kdp 문서 폴더들이 든 폴더> --compare <eval/compare.py -o 폴더> --out <결과 폴더>
 
 계통: 텍스트 레이어(바닥선) · PaddleOCR-VL 기본(같은 엔진 기본 마크다운) · docling(외부 도구 기본 마크다운) · kdp document.md(지금
-출력) · kdp document.rag.md(D21). 자르기 — LightRAG: ainsert 가 쓰는 고정 토큰 자르기 그대로(lightrag 패키지 — 받는 쪽이 LightRAG 다,
-D22. 사용자가 정한 512토큰과 LightRAG 기본 1,200토큰, 겹침 100), 구조: 빈 줄로 가른 덩이를 제목 줄에서 끊고 800자(512토큰 안팎)까지
-모음(제목·빈 줄을 보는 도구), 길이: 800자 창·100자 겹침(시험용 — 패키지 없이). 검색기 — BM25(글자 2-gram, 모델 없음)·BGE-M3(MIT,
+출력) · kdp document.rag.md(D21). 자르기 — LightRAG 자르기 그대로(lightrag 패키지 — 받는 쪽이 LightRAG 다, D22, 겹침 100): R 은 넣기
+기본(사용자 결정 2026-10-26)인 구조 자르기(LangChain 재귀 분할, 512토큰), F 는 ainsert 의 고정 토큰 자르기(사용자가 정한 512토큰과
+LightRAG 기본 1,200토큰). 구조: 빈 줄로 가른 덩이를 제목 줄에서 끊고 800자(512토큰 안팎)까지 모음(제목·빈 줄을 보는 도구), 길이:
+800자 창·100자 겹침(시험용 — 패키지 없이). 검색기 — BM25(글자 2-gram, 모델 없음)·BGE-M3(MIT,
 밀집 — GPU, LightRAG naive 와 같은 벡터 검색). 네 문서의 조각을 한 말뭉치에 넣고 찾는다(다른 문서 조각은 근거가 아니다). 정답 eval/golden/rag_questions.yaml —
 근거 낱말 묶음마다 대안 하나 이상이 든 조각이 근거다. 공백·HTML 태그·주석·마크다운 기호·글머리표는 떼고 비교한다(표기 차이로 계통이
 갈리지 않게). LightRAG 저장소로 직접 묻는 평가(그래프 포함)는 eval/lightrag_eval.py.
@@ -200,9 +201,9 @@ def chunk_lightrag_r(text: str, size: int = LR_TOKENS, overlap: int = LR_OVERLAP
 
 
 CHUNKERS: dict[str, tuple[str, Callable[[str], list[str]]]] = {
-    "lightrag": (f"LightRAG 자르기({LR_TOKENS}토큰·{LR_OVERLAP} 겹침)", chunk_lightrag),
+    "lightrag": (f"LightRAG F 고정 토큰 자르기({LR_TOKENS}토큰·{LR_OVERLAP} 겹침)", chunk_lightrag),
     "lightrag_r": (f"LightRAG R 전략 구조 자르기({LR_TOKENS}토큰·{LR_OVERLAP} 겹침)", chunk_lightrag_r),
-    "lightrag1200": (f"LightRAG 자르기({LR_DEFAULT:,}토큰 — LightRAG 기본)", functools.partial(chunk_lightrag, size=LR_DEFAULT)),
+    "lightrag1200": (f"LightRAG F 고정 토큰 자르기({LR_DEFAULT:,}토큰 — LightRAG 기본)", functools.partial(chunk_lightrag, size=LR_DEFAULT)),
     "structure": (f"구조 자르기({SIZE:,}자)", chunk_structure),
     "length": (f"길이 자르기({SIZE:,}자·{OVERLAP} 겹침)", chunk_length),
 }
@@ -354,7 +355,7 @@ def main(argv=None) -> None:
     ap.add_argument("--questions", type=Path, default=QUESTIONS)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--retrievers", default="bm25,bge-m3")
-    ap.add_argument("--chunkers", default="lightrag,lightrag1200,structure")
+    ap.add_argument("--chunkers", default="lightrag_r,lightrag,lightrag1200,structure")
     ap.add_argument("--variant", action="append", help="'이름=폴더' — 다른 설정으로 다시 조립한 kdp 출력(document.rag.md)을 계통으로 더한다")
     ap.add_argument("--model", default="BAAI/bge-m3")
     ap.add_argument("--device", default="cuda")

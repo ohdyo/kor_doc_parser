@@ -4,8 +4,9 @@
 #   1) 단위 시험  2) 비교군 — 텍스트 레이어(모델 없음)·PaddleOCR-VL 기본(기본 마크다운 포함, 서버를 띄웠다 내린다)·docling(CPU)
 #   3) kdp — runs/t1/out_base(test2~5 원래 A.X 파싱) 사본의 raw/ 로 새 코드가 다시 조립: document.rag.md 를 더 쓰고, 정본·document.md·
 #      blocks.jsonl 은 원래 출력과 같아야 한다(status.txt 의 '같음')  4) 같은 자르기·같은 검색기 평가(eval/rag_eval.py — 계통 다섯 ×
-#      LightRAG 512·1,200토큰·구조 자르기 × BM25·BGE-M3)  5) LightRAG 저장소 평가(eval/lightrag_eval.py — kdp document.rag.md·document.md·
-#      PaddleOCR-VL 기본을 512토큰으로, document.rag.md 를 1,200토큰으로도 × naive·mix. LLM 서버 serve_llm.sh 를 띄웠다 내린다)
+#      LightRAG R 512·F 512·F 1,200토큰·구조 자르기 × BM25·BGE-M3)  5) LightRAG 저장소 평가(eval/lightrag_eval.py 기본 — kdp
+#      document.rag.md 하나를 512토큰 R 로 × naive·mix. 1회차 넷은 --runs kdp_rag:512:F,kdp:512:F,paddle_default:512:F,kdp_rag:1200:F
+#      와 표 HTML 설정이었다. LLM 서버 serve_llm.sh 를 띄웠다 내린다)
 # 결과는 /workspace/rag_eval(status.txt 에 단계마다 시각·종료 코드). 끝나면 이 컴퓨터에서 pull.sh.
 #   tmux new -d -s rag "bash /workspace/kor_doc_parser/gpu_server/rag_eval.sh"
 set -uo pipefail

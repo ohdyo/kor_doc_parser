@@ -288,7 +288,7 @@ def test_rag_markdown_captions_and_figures_in_one_block():
                                       "caption_id": "p1.b05", "figure_desc": "남서쪽이 23.1℃로 가장 높다."}),
                      ("figure_title", "[그림 1] 평균기온 분포"),
                      ("image", None, {"img_path": "imgs/p1.b06.png"})))
-    rag = render_rag_markdown(doc)
+    rag = render_rag_markdown(doc, table_format="html")
     assert _chunks(rag)[1:] == ["(단위: 천원)", "<표 1> 사업비 현황\n" + TABLE,
                                 "[그림 1] 평균기온 분포\n![도표](imgs/p1.b04.png)\n그림 설명: 남서쪽이 23.1℃로 가장 높다.\n"
                                 "그림 속 글자: 기온(℃)\n\\- 23.1",
@@ -312,9 +312,9 @@ def test_rag_markdown_long_table_rows_repeat_header_and_title():
     html = head + "".join(map(row, range(1, 7))) + "</table>"
     doc = _doc(_page(1, ("figure_title", "<표 2> 지점별 기온"),
                      ("table", None, {"html": html, "caption_id": "p1.b01", "unit": "℃", "header_rows": 1})))
-    assert _chunks(render_rag_markdown(doc))[1:] == ["<표 2> 지점별 기온\n" + html]     # 한도 안이면 그대로
+    assert _chunks(render_rag_markdown(doc, table_format="html"))[1:] == ["<표 2> 지점별 기온\n" + html]     # 한도 안이면 그대로
     small = len(head) + 2 * len(row(1)) + len("</table>")
-    assert _chunks(render_rag_markdown(doc, small))[1:] == [
+    assert _chunks(render_rag_markdown(doc, small, "html"))[1:] == [
         "<표 2> 지점별 기온\n" + head + row(1) + row(2) + "</table>",
         "<표 2> 지점별 기온 (계속) (단위: ℃)\n" + head + row(3) + row(4) + "</table>",
         "<표 2> 지점별 기온 (계속) (단위: ℃)\n" + head + row(5) + row(6) + "</table>"]
@@ -329,15 +329,17 @@ def test_rag_markdown_continued_table_joined_and_lone_piece_gets_header():
     md = render_rag_markdown(_doc(_page(1, ("figure_title", "<표 3> 기온"),
                                         ("table", None, {"html": a, "caption_id": "p1.b01", "header_rows": 1})),
                                   _page(2, ("table", None, {"html": b, "continues_from": "p1.b02", "header_rows": 1}),
-                                        ("text", "표 뒤 글"))))
+                                        ("text", "표 뒤 글"))), table_format="html")
     assert md == "<!-- page 1 -->\n\n<표 3> 기온\n" + joined + "\n\n<!-- page 2 -->\n\n표 뒤 글\n"
     s1, s2 = ["1. 기온"], ["1. 기온(계속)"]
-    lone = render_rag_markdown(_doc(
+    doc = _doc(
         _page(1, ("figure_title", "<표 3> 기온", {"section_path": s1}),
               ("table", None, {"html": a, "caption_id": "p1.b01", "header_rows": 1, "section_path": s1})),
         _page(2, ("paragraph_title", "1. 기온(계속)", {"heading_level": 1, "section_path": s2}),
-              ("table", None, {"html": b, "continues_from": "p1.b02", "header_rows": 1, "section_path": s2}))))
+              ("table", None, {"html": b, "continues_from": "p1.b02", "header_rows": 1, "section_path": s2})))
+    lone = render_rag_markdown(doc, table_format="html")
     assert _chunks(lone)[1:] == ["<표 3> 기온\n" + a, "<!-- page 2 -->", "## 1. 기온(계속)", "<표 3> 기온 (계속)\n" + b]
+    assert _chunks(render_rag_markdown(doc))[-1] == "<표 3> 기온 (계속)\n| 지점 | 기온 |\n|---|---|\n| 충주 | 25.1 |"   # 기본 파이프 표도
 
 
 def test_rag_markdown_continued_table_header_from_repeated_rows():
@@ -347,14 +349,16 @@ def test_rag_markdown_continued_table_header_from_repeated_rows():
     a = f"<table>{top}<tr><td>청주</td><td>26.0</td><td>25.1</td></tr></table>"
     b = f"<table>{top}<tr><td>충주</td><td>25.1</td><td>24.0</td></tr></table>"
     s1, s2 = ["1. 기온"], ["1. 기온(계속)"]
-    lone = render_rag_markdown(_doc(
+    doc = _doc(
         _page(1, ("figure_title", "<표 3> 기온", {"section_path": s1}),
               ("table", None, {"html": a, "caption_id": "p1.b01", "section_path": s1})),
         _page(2, ("paragraph_title", "1. 기온(계속)", {"heading_level": 1, "section_path": s2}),
-              ("table", None, {"html": b, "continues_from": "p1.b02", "header_rows": 1, "section_path": s2}))))
-    assert _chunks(lone)[-1] == "<표 3> 기온 (계속)\n" + b                 # 칸 이름 행이 남는다
+              ("table", None, {"html": b, "continues_from": "p1.b02", "header_rows": 1, "section_path": s2})))
+    assert _chunks(render_rag_markdown(doc, table_format="html"))[-1] == "<표 3> 기온 (계속)\n" + b   # 칸 이름 행이 남는다
+    assert _chunks(render_rag_markdown(doc))[-1] == "<표 3> 기온 (계속)\n| 구분 | 2024 | 2025 |\n|---|---|---|\n| 충주 | 25.1 | 24.0 |"
     joined = render_rag_markdown(_doc(_page(1, ("table", None, {"html": a})),
-                                      _page(2, ("table", None, {"html": b, "continues_from": "p1.b01", "header_rows": 1}))), len(a))
+                                      _page(2, ("table", None, {"html": b, "continues_from": "p1.b01", "header_rows": 1}))),
+                                 len(a), "html")
     assert _chunks(joined)[1:] == [a, b, "<!-- page 2 -->"]                # 뒤 묶음도 칸 이름 행부터
 
 
@@ -366,7 +370,7 @@ def test_rag_markdown_chain_with_image_piece():
         _page(1, ("figure_title", "<표 4> 기온"), ("table", None, {"html": a, "caption_id": "p1.b01", "header_rows": 1})),
         _page(2, ("table", None, {"html": TABLE, "continues_from": "p1.b02", "route": "image", "route_reason": "failed",
                                   "img_path": "imgs/p2.b01.png"})),
-        _page(3, ("table", None, {"html": c, "continues_from": "p2.b01"}))))
+        _page(3, ("table", None, {"html": c, "continues_from": "p2.b01"}))), table_format="html")
     assert _chunks(md)[1:] == ["<표 4> 기온\n" + a,
                                "<표 4> 기온 (계속)\n![표](imgs/p2.b01.png)\n" + TABLE,
                                "<표 4> 기온 (계속)\n<table><tr><th>지점</th><th>기온</th></tr><tr><td>제천</td><td>24.2</td></tr></table>",
@@ -374,7 +378,7 @@ def test_rag_markdown_chain_with_image_piece():
 
 
 def test_rag_markdown_pipe_tables():
-    """table_format 'pipe' — 칸을 읽은 표는 파이프 표로(제목·'(계속)'·단위 줄은 HTML 꼴과 같다), 이미지 갈래 표는 HTML 그대로."""
+    """table_format 'pipe'(기본) — 칸을 읽은 표는 파이프 표로(제목·'(계속)'·단위 줄은 HTML 꼴과 같다), 이미지 갈래 표는 HTML 그대로."""
     def row(i):
         return f"<tr><td>지점{i}</td><td>{i}.5</td></tr>"
 
@@ -391,6 +395,6 @@ def test_rag_markdown_pipe_tables():
         "<표 2> 지점별 기온\n" + head + "\n| 지점1 | 1.5 |",
         "<표 2> 지점별 기온 (계속) (단위: ℃)\n" + head + "\n| 지점2 | 2.5 |",
         "<표 2> 지점별 기온 (계속) (단위: ℃)\n" + head + "\n| 지점3 | 3.5 |"]
-    assert render_rag_markdown(doc) != rag                                             # 기본은 HTML 그대로
+    assert render_rag_markdown(doc) == rag != render_rag_markdown(doc, table_format="html")   # 기본은 파이프 표(사용자 결정 2026-10-26)
     markdown_it = pytest.importorskip("markdown_it")
     assert markdown_it.MarkdownIt("commonmark").enable("table").render(rag).count("<table>") == 2   # 파이프 표 + 이미지 갈래 HTML 표

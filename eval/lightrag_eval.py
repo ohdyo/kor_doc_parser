@@ -3,15 +3,16 @@
 
     python eval/lightrag_eval.py --kdp <kdp 문서 폴더들> --compare <eval/compare.py -o 폴더> --work <저장소 폴더> --out <결과 폴더>
 
-- 실행(--runs): '계통:청크 토큰' 목록 — 기본은 세 계통을 512토큰(사용자 결정 2026-10-26)으로, kdp document.rag.md 만 LightRAG 기본
-  1,200토큰으로도 만들어 견준다. 겹침은 LightRAG 기본 100토큰. 넣기는 SDK ainsert(고정 토큰 자르기), 문서 id 는 문서 해시,
-  file_path 는 문서 이름(test2 …).
+- 실행(--runs): '계통:청크 토큰[:R|F]' 목록 — 기본은 kdp document.rag.md 하나를 512토큰 R 로(사용자 결정 2026-10-26 — 저장소마다
+  LLM 추출에 15분 안팎이라 고른 후보 하나만, 1회차 계통·크기 비교는 `테스트_결과.md` 14장). 넣기 R 은 구조 자르기
+  (apipeline_enqueue_documents 에 process_options 'R' — 빈 줄·줄바꿈 경계로 나눠 청크 토큰까지 모은다, langchain-text-splitters),
+  F 는 SDK ainsert(고정 토큰 자르기). 겹침은 LightRAG 기본 100토큰. 문서 id 는 문서 해시, file_path 는 문서 이름(test2 …).
 - 추출: 언어 Korean, 한국어 엔티티 종류 안내(KO_ENTITY_TYPES — 사람 이름은 뽑지 않는다), 글리닝 1(기본). LightRAG 1.5.7 의
   few-shot 은 실제 예문이 아니라 출력 꼴 틀이라(작은 모델이 예문 엔티티를 베끼지 않게) 그대로 둔다.
 - LLM: OpenAI 호환 서버(gpu_server/serve_llm.sh 의 vLLM — 기본 국내 모델 skt/A.X-4.0-Light, Apache-2.0). LightRAG 는 temperature·
   max_tokens 를 넘기지 않으므로(모델 기본 표본 뽑기가 된다) 여기서 0·2,048 로 건다.
 - 임베딩: 이 프로세스의 BGE-M3(MIT, 1024차원). 저장소: 벡터 NanoVectorDB(LightRAG 기본, numpy 로 모두 견주는 정확 검색 — 사용자
-  결정 2026-10-26)·그래프 NetworkX·나머지 JSON — 모두 <work>/<계통>-<토큰>/ 파일. 실행마다 지우고 새로 만든다(--reuse 면 둔다 —
+  결정 2026-10-26)·그래프 NetworkX·나머지 JSON — 모두 <work>/<계통>-<토큰>-<R|F>/ 파일. 실행마다 지우고 새로 만든다(--reuse 면 둔다 —
   글이 바뀌어도 LightRAG 가 같은 문서 id 를 다시 넣지 않아 옛 글로 잰다).
 결과: <out>/report.md · report.json · ranks.jsonl."""
 from __future__ import annotations
@@ -28,7 +29,7 @@ from pathlib import Path
 from rag_eval import (NAMES, P_TOKENS, QUESTIONS, TYPES, Dense, frac, hit, intro, load_questions, norm, parse_variants,
                       summarize, system_texts)
 
-RUNS = "kdp_rag:512,kdp:512,paddle_default:512,kdp_rag:1200"
+RUNS = "kdp_rag:512"
 MODES = ("naive", "mix")
 MODE_NAMES = {"naive": "naive(조각 벡터 검색)", "mix": "mix(지식 그래프 + 벡터)", "local": "local", "global": "global",
               "hybrid": "hybrid"}
@@ -51,10 +52,10 @@ KO_ENTITY_TYPES = """각 엔티티를 아래 종류 가운데 하나로 분류�
 
 
 def parse_runs(spec: str, names=NAMES) -> list[tuple[str, int, str]]:
-    """'계통:토큰[:R],…' → [(계통, 토큰, 자르기)] — 자르기는 F(고정 토큰, ainsert 기본) 또는 R(구조 자르기 — LangChain 재귀 분할)."""
+    """'계통:토큰[:R|F],…' → [(계통, 토큰, 자르기)] — 자르기는 R(구조 자르기 — LangChain 재귀 분할, 기본) 또는 F(고정 토큰, ainsert)."""
     out = []
     for item in (x.strip() for x in spec.split(",") if x.strip()):
-        name, tokens, strategy = (item.split(":") + ["F"])[:3]
+        name, tokens, strategy = (item.split(":") + ["R"])[:3]
         if name not in names or not tokens.isdigit() or strategy not in ("F", "R"):
             sys.exit(f"--runs 가 잘못됐다: {item}")
         out.append((name, int(tokens), strategy))
@@ -62,7 +63,7 @@ def parse_runs(spec: str, names=NAMES) -> list[tuple[str, int, str]]:
 
 
 def run_label(name: str, tokens: int, strategy: str) -> str:
-    return f"{name}:{tokens}" + (":R" if strategy == "R" else "")
+    return f"{name}:{tokens}:{strategy}"
 
 
 def chunk_rank(chunks: list[dict], doc: str, evidence: list[list[str]]) -> int | None:
@@ -174,13 +175,14 @@ async def run(questions: list[dict], texts: dict[str, dict[str, str]], keys: dic
 
 
 def run_name(label: str) -> str:
-    name, tokens, strategy = (label.split(":") + ["F"])[:3]
-    return f"{NAMES.get(name, name)} · {int(tokens):,}토큰" + (" · R 구조 자르기" if strategy == "R" else "")
+    name, tokens, strategy = label.split(":")
+    return f"{NAMES.get(name, name)} · {int(tokens):,}토큰 · " + ("R 구조 자르기" if strategy == "R" else "F 고정 토큰")
 
 
 def render(summary: dict, builds: dict, questions: list[dict], labels: list[str], modes: list[str], a, dense_name: str) -> str:
     lines = ["# LightRAG 검색 평가(D21·D22)", "", intro(questions),
-             f"LightRAG 1.5.x SDK — 넣기 ainsert(고정 토큰, 겹침 {a.overlap}), 언어 Korean, 엔티티 종류 "
+             f"LightRAG 1.5.x SDK — 넣기 R(구조 자르기, process_options 'R')·F(고정 토큰, ainsert)는 실행 이름에, 겹침 {a.overlap}, "
+             f"언어 Korean, 엔티티 종류 "
              f"{'한국어 안내' if a.entity_types == 'ko' else 'LightRAG 기본'}, 글리닝 {a.gleaning}, LLM `{a.llm_model}`"
              f"(temperature {a.temperature}, max_tokens {a.llm_max_tokens}), 임베딩 `{dense_name}`, 벡터 NanoVectorDB·그래프 NetworkX."
              f" 질문 top_k {a.top_k}·chunk_top_k {a.chunk_top_k}, 다시 순위 매기기 없음.",
@@ -210,7 +212,7 @@ def main(argv=None) -> None:
     ap.add_argument("--questions", type=Path, default=QUESTIONS)
     ap.add_argument("--work", type=Path, required=True, help="LightRAG 저장소 폴더(실행마다 하위 폴더)")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--runs", default=RUNS, help="'계통:청크 토큰[:R]' 목록 — R 은 구조 자르기")   # 그래프는 실행마다 LLM 추출이라 넷만 기본으로
+    ap.add_argument("--runs", default=RUNS, help="'계통:청크 토큰[:R|F]' 목록 — R 구조 자르기(기본)·F 고정 토큰")   # 그래프는 실행마다 LLM 추출이라 하나만 기본으로
     ap.add_argument("--variant", action="append", help="'이름=폴더' — 다른 설정으로 다시 조립한 kdp 출력을 계통으로(eval/rag_eval.py 와 같다)")
     ap.add_argument("--modes", default=",".join(MODES))
     ap.add_argument("--overlap", type=int, default=100)

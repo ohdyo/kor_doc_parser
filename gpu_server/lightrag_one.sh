@@ -1,7 +1,8 @@
 #!/bin/bash
 # 서버: LightRAG 저장소 평가를 고른 실행만 — LLM 서버(serve_llm.sh)를 띄우고 eval/lightrag_eval.py 를 돌린 뒤 내린다(D21·D22).
 # rag_eval.sh 를 한 번 돌린 서버에서 그 비교군($W/compare)·kdp 출력을 쓴다. 인자는 lightrag_eval.py 에 그대로 넘긴다.
-#   tmux new -d -s lr "bash /workspace/kor_doc_parser/gpu_server/lightrag_one.sh <이름> --runs kdp_rag_pipe:512:R --variant kdp_rag_pipe=/workspace/rag_eval/kdp_pipe"
+#   tmux new -d -s lr "bash /workspace/kor_doc_parser/gpu_server/lightrag_one.sh <이름> [--runs 계통:토큰[:R|F],…]"   — 인자 없으면 기본
+#   (kdp document.rag.md 하나를 512토큰 R 로). 2회차는 <이름>=rpipe --runs kdp_rag_pipe:512:R --variant kdp_rag_pipe=/workspace/rag_eval/kdp_pipe
 #   진행: /workspace/rag_eval/status_<이름>.txt, 결과: /workspace/rag_eval/lightrag_report_<이름>/ (저장소는 lightrag_<이름>/)
 set -uo pipefail
 export LC_ALL=C.UTF-8 PYTHONUNBUFFERED=1
@@ -19,7 +20,7 @@ mark 시작
 bash gpu_server/serve_llm.sh > $W/llm_$NAME.log 2>&1 &
 L=$!
 if up 8120; then
-  $Q/python eval/lightrag_eval.py --kdp ${KDP:-$W/kdp_html} --compare $W/compare --work $W/lightrag_$NAME --out $W/lightrag_report_$NAME "$@" \
+  $Q/python eval/lightrag_eval.py --kdp ${KDP:-$W/kdp} --compare $W/compare --work $W/lightrag_$NAME --out $W/lightrag_report_$NAME "$@" \
     > $W/lightrag_eval_$NAME.log 2>&1; mark "LightRAG 평가 $?"
 else
   mark "LLM 서버 실패"
