@@ -1,4 +1,4 @@
-"""RAG 하류 평가 축소판(eval/rag_eval.py·eval/lightrag_eval.py, D21) — 정답 비교 규칙, 자르기, BM25, 순위·요약, 질문 파일."""
+"""RAG 하류 평가 축소판(eval/rag_eval.py·eval/lightrag_eval.py·eval/answer_eval.py, D21·D24) — 정답 비교 규칙, 자르기, BM25, 순위·요약, 질문 파일."""
 import importlib.util
 import json
 import logging
@@ -22,6 +22,7 @@ def _load(name):
 
 ev = _load("rag_eval")
 lr = _load("lightrag_eval")
+ae = _load("answer_eval")
 
 
 def test_norm_ignores_markup_and_spacing():
@@ -186,3 +187,33 @@ def test_variant_system(tmp_path):
         ev.parse_variants(["kdp=x"])                                                   # 이미 있는 계통 이름
     assert lr.parse_runs("kdp_rag_pipe:512:R", {**ev.NAMES, **variants}) == [("kdp_rag_pipe", 512, "R")]
     assert lr.run_label("kdp_rag", 512, "F") == "kdp_rag:512:F" and lr.run_name("kdp_rag_pipe:512:R").endswith("R 구조 자르기")
+
+
+def test_answer_summary_counts_context_and_strips_references():
+    """답 비교 — 모드마다 문맥 조각에 근거가 든 질문(유형별), 평균 조각·답 글자(참고 문헌 절은 빼고)·시간, 실패 수."""
+    rows = [{"mode": "mix", "type": "표", "status": "success", "scored": True, "evidence_rank": 3, "chunks": 8, "seconds": 4.0,
+             "answer": "값은 0.7입니다.\n\n### References\n- [1] test2"},
+            {"mode": "mix", "type": "요약", "status": "success", "scored": False, "evidence_rank": None, "chunks": 6, "seconds": 2.0,
+             "answer": "모릅니다"},
+            {"mode": "bypass", "type": "표", "status": "error", "scored": True, "evidence_rank": None, "chunks": 0, "seconds": 1.0,
+             "answer": ""}]
+    s = ae.summarize(rows)
+    assert ae.body(rows[0]["answer"]) == "값은 0.7입니다."
+    assert (s["mix"]["in_context"], s["mix"]["scored"], s["mix"]["in_context_by_type"], s["mix"]["chunks"], s["mix"]["chars"]) == (
+        1, 1, {"표": 1, "요약": 0}, 7.0, 7)
+    assert (s["bypass"]["failed"], s["bypass"]["in_context"]) == (1, 0)
+    assert "1/1" in ae.render(s, "kdp_rag:512:R", type("A", (), {"llm_model": "m", "temperature": 0.0, "llm_max_tokens": 2048,
+                                                                 "top_k": 40, "chunk_top_k": 20, "max_total_tokens": 12000,
+                                                                 "max_entity_tokens": 2400, "max_relation_tokens": 3200})(), "rr")
+
+
+def test_answer_questions_load_both_formats(tmp_path):
+    """답 비교 질문 — 한 문서(doc)·여러 문서(docs) 꼴을 함께 읽고, 근거 낱말은 정규화, 없는 질문은 빈 목록."""
+    f = tmp_path / "q.yaml"
+    f.write_text('questions:\n'
+                 '  - {id: a1, doc: test2, type: 표, q: "값?", a: "0.7", evidence: [["양구군 (0.7)"]]}\n'
+                 '  - {id: a2, docs: [test3, test5], type: 문서간, q: "비교?", a: "충북 20.6℃, 대구·경북 21.3℃", points: ["20.6℃", "21.3℃"]}\n',
+                 encoding="utf-8")
+    qs = ae.load(f)
+    assert [q["docs"] for q in qs] == [["test2"], ["test3", "test5"]] and qs[0]["ev"] == [["양구군(0.7)"]] and qs[1]["ev"] == []
+    assert len(ae.load(ae.QUESTIONS.parent / "rag_questions.yaml")) == 72                     # 검색 평가 질문도 같은 꼴로
