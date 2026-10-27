@@ -60,7 +60,12 @@ def run_checks(doc: Document, raws: list[RawPage], cfg: QCCfg) -> Document:
                       and any(pv.get("rule") == "figure_desc_missing" for pv in b.provenance or []))
     if undescribed:
         reasons.append("figure_desc_missing")      # 설명할 그림에 설명 응답이 없다(D19) — kdp describe 로 채운다
+    unread = sum(1 for p in doc.pages if p.keep for b in p.blocks if b.keep
+                 and any(pv.get("rule") == "figure_ocr_missing" for pv in b.provenance or []))
+    if unread:
+        reasons.append("figure_ocr_missing")       # 다시 읽을 그림에 읽기 기록이 없다 — kdp figure-ocr 로 채운다
     status = "error" if "block_errors" in reasons else ("review" if reasons else "ok")
     doc.qc = QC(status=status, reasons=reasons, block_errors=errors, truncated_blocks=truncated,
-                empty_pages=empty, drop_char_ratio=drop_ratio, text_layer_agreement=layer, undescribed_figures=undescribed)
+                empty_pages=empty, drop_char_ratio=drop_ratio, text_layer_agreement=layer, undescribed_figures=undescribed,
+                unread_figures=unread)
     return doc

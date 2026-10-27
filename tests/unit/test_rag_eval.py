@@ -1,6 +1,7 @@
 """RAG 하류 평가 축소판(eval/rag_eval.py·eval/lightrag_eval.py, D21) — 정답 비교 규칙, 자르기, BM25, 순위·요약, 질문 파일."""
 import importlib.util
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -49,6 +50,35 @@ def test_bm25_and_rank():
     assert s.shape == (2, 3) and s[0].argmax() == 1 and s[1].argmax() == 0
     assert ev.first_rank(np.array([0.1, 0.5, 0.5]), {2}) == 2          # 같은 점수는 앞 조각 먼저
     assert ev.first_rank(np.array([0.1, 0.5]), set()) is None
+
+
+def test_rerank_scores_reorders_only_the_pool():
+    """다시 순위 — 질문마다 첫 검색 위 pool 개만 교차 인코더 점수 차례로 맨 앞에, 나머지 차례는 그대로."""
+    cross = {"a": 0.1, "b": 0.5, "c": 0.9}
+    out = ev.rerank_scores(np.array([[0.9, 0.8, 0.7, 0.1]]), ["a", "b", "c", "d"], ["q"],
+                           lambda q, docs: [cross[d] for d in docs], pool=3)
+    assert [ev.first_rank(out[0], {i}) for i in range(4)] == [3, 2, 1, 4]
+    tie = ev.rerank_scores(np.array([[0.5, 0.5, 0.9]]), ["x", "y", "z"], ["q"], lambda q, docs: [0.0] * len(docs), pool=2)
+    assert [ev.first_rank(tie[0], {i}) for i in range(3)] == [2, 3, 1]   # 같은 다시 순위 점수는 첫 검색 차례, 같은 첫 점수는 앞 조각이 pool 에
+
+
+def test_evaluate_with_rerank():
+    """bge-m3+rr — 밀집 점수 위 pool 개를 다시 순위 점수로(모델 대신 가짜 점수)."""
+    class Dense:
+        def scores(self, chunks, queries):
+            return np.array([[1.0 - i / 10 for i in range(len(chunks))] for _ in queries])
+
+    class Rerank:
+        pool = 2
+
+        def score(self, query, docs):
+            return [1.0 if "21.3" in d else 0.0 for d in docs]
+
+    questions = [{"id": "a", "doc": "d1", "doc_id": "sha256:1", "type": "문단", "q": "충북 평균기온", "ev": [[ev.norm("21.3℃")]]}]
+    texts = {"kdp": {"sha256:1": "앞 글\n\n충북 9월 평균기온 21.3℃\n\n뒤 글"}}
+    cut = {"length": lambda t: t.split("\n\n")}
+    rows, _ = ev.evaluate(questions, texts, ["bge-m3", "bge-m3+rr"], cut, Dense(), Rerank())
+    assert {r["retriever"]: r["rank"] for r in rows} == {"bge-m3": 2, "bge-m3+rr": 1}
 
 
 def test_evaluate_and_summarize():
@@ -126,6 +156,19 @@ def test_lightrag_runs_and_graph_hit():
     assert not lr.graph_hit([{"file_path": "test5", "description": "17."}, {"file_path": "test5", "description": "5 23.1"}],
                             "test5", [[ev.norm("17.523.1")]])                             # 설명 경계에서 글자가 붙지 않는다
 
+
+
+def test_lightrag_warning_counts_and_number_only():
+    """넣기 경고 세기(추출 잘림 처음·글리닝, 꼴 오류 — 관계 따로)와 숫자뿐인 엔티티 이름."""
+    w = lr.Warnings()
+    for msg in ("Token-limit truncation during initial entity extraction for chunk c1 in test5",
+                "Token-limit truncation during gleaning entity extraction for chunk c1 in test5",
+                "c2: LLM output format error; found 3/4 fields on RELATION `1`~`2개소`",
+                "c3: LLM output format error; found 3/4 fields on ENTITY `기상·환경` @ `9월`", "low_level_keywords is empty"):
+        w.emit(logging.LogRecord("lightrag", logging.WARNING, __file__, 1, msg, None, None))
+    assert w.counts == {"truncated": 1, "truncated_gleaning": 1, "format_errors": 2, "format_relations": 1}
+    names = ("2026", "23.1℃", "768(11)", "-23.2%", "13주", "충북 평균기온")
+    assert [bool(lr.NUMBER_ONLY.fullmatch(n)) for n in names] == [True, True, True, True, False, False]
 
 
 def test_variant_system(tmp_path):

@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = "1.2"                 # 1.1: 블록 heading_level(M3) · 1.2: 그림 갈래·그림 설명(D19)
+SCHEMA_VERSION = "1.3"                 # 1.1: 블록 heading_level(M3) · 1.2: 그림 갈래·그림 설명(D19) · 1.3: 그림 다시 읽기 QC
 
 PageClass = Literal["normal", "cover", "toc", "blank", "divider", "form_blank", "approval"]
 BBox = tuple[float, float, float, float]
@@ -98,6 +98,7 @@ class QC(_Model):
     repeat_ngram_ratio: float | None = None
     unsupported_char_ratio: float | None = None
     undescribed_figures: int = 0         # 설명할 그림인데 설명 응답이 없는 것(D19) — kdp describe 로 채운다
+    unread_figures: int = 0              # 다시 읽을 그림인데 읽기 기록이 없는 것(figure_ocr) — kdp figure-ocr 로 채운다
 
 
 class Document(_Model):

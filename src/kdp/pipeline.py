@@ -9,8 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
-from . import __version__, figure_desc
-from .assemble.figures import attach_descriptions, join_wrapped, route_figures, table_img_names
+from . import __version__, figure_desc, figure_ocr
+from .assemble.figures import attach_descriptions, attach_figure_ocr, join_wrapped, route_figures, table_img_names
 from .assemble.headings import headings
 from .assemble.lists import lists
 from .assemble.normalize import normalize
@@ -38,7 +38,7 @@ from .render_md import render_markdown, render_rag_markdown
 from .schema import Document, ParserInfo, Source
 from .textlayer.extract import apply_text_layer, display_chars, mark_hidden
 
-ASSEMBLE_CODE_VERSION = "11"
+ASSEMBLE_CODE_VERSION = "12"
 JSONL_FIELDS = OUTPUT_FIELDS
 
 
@@ -53,6 +53,10 @@ def parse_pdf(pdf_path, out_root=None, settings: Settings | None = None, engine:
         raise ValueError("describe.enabled 인데 configs/env.yaml 의 describer.server_url 이 없다")
     if settings.parse.describe.enabled and not settings.parse.output.keep_raw:     # 크롭과 응답 기록이 raw/ 에 있다
         raise ValueError("describe.enabled 는 output.keep_raw true 가 필요하다")
+    if settings.parse.figure_ocr.enabled and not settings.env.vlm.server_url:
+        raise ValueError("figure_ocr.enabled 인데 configs/env.yaml 의 vlm.server_url 이 없다")
+    if settings.parse.figure_ocr.enabled and not settings.parse.output.keep_raw:   # 읽기 기록이 raw/ 에 있다
+        raise ValueError("figure_ocr.enabled 는 output.keep_raw true 가 필요하다")
     pdf_path = Path(pdf_path).resolve()
     data = pdf_path.read_bytes()
     doc_id = doc_id_of(data)
@@ -84,6 +88,9 @@ def parse_pdf(pdf_path, out_root=None, settings: Settings | None = None, engine:
     shutil.rmtree(raw_dir, ignore_errors=True)
     tmp_dir.rename(raw_dir)
     doc = _finish(info, raws, doc_dir, settings)
+    # 그림 다시 읽기 — 그림 설명보다 먼저(설명 물음에 그림 글이 들어간다). 실패한 그림은 QC 가 세고 kdp figure-ocr 가 다시 부른다
+    if settings.parse.figure_ocr.enabled and figure_ocr.run(doc, doc_dir, settings, data)[0]:
+        doc = _finish(info, raws, doc_dir, settings)
     # 그림 설명(D19) — 조립이 고른 그림만 부르고 받은 것이 있으면 다시 조립한다. 실패한 그림은 QC 가 세고 kdp describe 가 다시 부른다
     if settings.parse.describe.enabled and figure_desc.run(doc, doc_dir, settings)[0]:
         doc = _finish(info, raws, doc_dir, settings)
@@ -106,6 +113,17 @@ def describe(doc_dir, settings: Settings | None = None) -> tuple[Document, int, 
     settings = settings or load_settings()
     doc = reassemble(doc_dir, settings)
     new, failed = figure_desc.run(doc, Path(doc_dir), settings)
+    return (reassemble(doc_dir, settings) if new else doc), new, failed
+
+
+def ocr_figures(doc_dir, settings: Settings | None = None, pdf=None) -> tuple[Document, int, list[str]]:
+    """읽기 기록이 없는 그림만 원본 PDF 에서 다시 그려 VLM 에 보내고 다시 조립한다(kdp figure-ocr). PDF 는 raw/doc.json 의 경로(또는
+    pdf) — 문서 해시가 같아야 한다. 그림 글이 바뀌면 그림 설명 물음도 바뀌므로 kdp describe 를 이어서 돌린다."""
+    settings = settings or load_settings()
+    if not settings.parse.output.keep_raw:             # 재조립이 raw/ 를 지운다 — 읽기 기록도 raw/ 에 있다
+        raise ValueError("figure_ocr 는 output.keep_raw true 가 필요하다")
+    doc = reassemble(doc_dir, settings)
+    new, failed = figure_ocr.run(doc, Path(doc_dir), settings, Path(pdf or read_json(Path(doc_dir) / "raw" / "doc.json")["path"]))
     return (reassemble(doc_dir, settings) if new else doc), new, failed
 
 
@@ -186,6 +204,8 @@ def _finish(info: PdfInfo, raws, doc_dir: Path, settings: Settings) -> Document:
     doc = mark_meta_blocks(doc)
     doc = classify_pages(doc, settings.parse.classify)
     doc = tables(doc)                                  # 배치용 표를 글로 푼 뒤에 제목·항목을 본다
+    doc = attach_figure_ocr(doc, figure_ocr.load(doc_dir / "raw") if settings.parse.figure_ocr.enabled else {},
+                            settings.parse.figure_ocr)    # 그림 다시 읽기 기록만 읽는다 — 그림 글을 정한 뒤(_noise·_absorb), 갈래·설명보다 먼저
     doc = merge_tables(doc)                            # 제목보다 먼저 — 버린 '(계속)' 표시가 섹션 경로에 들어가지 않게
     doc = route_figures(doc)                           # 그림 글·제목이 정해진 뒤 — 글만으로 되는 그림 / 그림과 함께 볼 그림(D19)
     doc = headings(doc, info.toc)

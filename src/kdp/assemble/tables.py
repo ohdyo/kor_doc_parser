@@ -37,6 +37,11 @@ NUMERIC_BODY = 0.6            # 본문 칸 중 이만큼 이상이 숫자면 숫
 PANEL = re.compile(r"\s*[(（]?\s*[a-zA-Z가-하]\s*[)）]\s*")   # 나란한 그림의 패널 표지 '(a)'·'(나)'
 PANEL_GAP = 6.0               # 패널 표지와 그림 사이 세로 틈(pt)
 INSIDE = 0.9                  # 그림 상자 안에 이만큼 이상 든 글 블록은 그림 속 글이다
+SALVAGE_MIN_LINES = 8         # 잘린 그래프 글이라도 되풀이 앞에 다른 줄이 이만큼 이상이면 읽은 글로 둔다(실측 test4.pdf 10쪽 — 값 표지 20줄)
+LOOP_TAIL = 8                 # 끝 글자가 이만큼 같은 줄 셋은 되풀이('… 효과 온기 온(°C)'·'… 절감하려 하다' — 실측 test4·test5)
+VOCAB_MIN = 0.5               # 되풀이로 잘린 그림 글은 한글 낱말의 이 비율 이상이 본문에 있어야 둔다(지어낸 글 23%·읽은 글 69% — 실측 test5)
+_NUM_LINE = re.compile(r"[+\-−]?\d+(?:\.\d+)?")
+_HAN_WORD = re.compile(r"[가-힣]{2,}")
 EMPTY_FAILED = 0.9            # 거의 모든 칸이 비면 인식 실패로 본다(빈 서식 표는 절반쯤 비어도 정상)
 LAYER_FAILED = 0.8            # born-digital 표에서 레이어 글자 중 모델 표에 있는 비율이 이보다 낮으면 인식 실패(행을 빠뜨림 등)
 LAYOUT_MIN_CHARS = 30         # 1~2칸 표의 글자가 이보다 많으면 배치용 표(글상자)로 본다
@@ -322,6 +327,7 @@ def tables(doc: Document) -> Document:
         if removed:
             t.provenance = (t.provenance or []) + [{"rule": "blank_below", "removed": removed}]
     spill = _spill_ids(doc)
+    body = body_text(doc)
     for page in doc.pages:
         for t in page.blocks:
             if t.type != "table" or t.merged_into:
@@ -342,7 +348,7 @@ def tables(doc: Document) -> Document:
             _link(page, t)
         figs = [f for f in page.blocks if f.type in ("image", "chart") and f.keep and f.merged_into is None]
         for f in figs:
-            _noise(f)
+            _noise(f, body)
             _absorb(page, f)
         for f in figs:                                             # 그림 글을 모두 묶은 뒤 — 묶인 줄을 다른 그림 제목으로 잇지 않게
             _link_figure(page, f)
@@ -354,15 +360,84 @@ def _letters(text: str) -> bool:
     return any(ch.isalnum() and not "\u3040" <= ch <= "\u30ff" for ch in unicodedata.normalize("NFKC", text))
 
 
-def _noise(f: Block) -> None:
-    """글 없는 그림(만화·삽화)에서 그림 속 글자 읽기가 지어낸 글 — 가나·기호뿐인 글('ふ～～～'·'うっ')은 버린다(실측 test2.pdf
-    8쪽 — CPU·GPU 모두, GPU 는 길이 한도로 잘림). 그래프 글은 잘렸으면 모두 버린다 — 그래프 속 글자는 짧아 한도까지 간 글은
-    지어낸 되풀이고 그 앞줄의 값도 그림에 없었다(실측 test3.pdf — 등고선 지도 '203.0, 203.1 …', 그래프 '100.0 / 경수량' 되풀이).
-    버린 글의 잘림 표시는 기록으로 옮긴다(출력에 남은 잘린 글이 없다). 그 밖의 잘린 글은 글자가 있으면 둔다(QC 가 잘림으로 센다)."""
-    if f.figure_text and (not _letters(f.figure_text) or f.type == "chart" and f.truncated):
+def body_text(doc: Document) -> str:
+    """잘린 그림 글과 맞춰 볼 본문 — 살린 쪽의 살린 글·표 블록 글(표는 태그를 뗀 칸 글, 띄어쓰기 뺀)."""
+    parts = [x for p in doc.pages if p.keep for b in p.blocks if b.keep and b.type not in ("image", "chart")
+             for x in (b.text, htmllib.unescape(re.sub(r"<[^>]+>", " ", b.html)) if b.html else None) if x]
+    return "".join("".join(parts).split())
+
+
+def _line_num(s: str) -> float | None:
+    """수 한 줄('203.1'·'−5') — 되풀이 찾기용(표 칸 _num 과 다르다: 쉼표 수는 수가 아니다)."""
+    return float(s.replace("−", "-")) if _NUM_LINE.fullmatch(s) else None
+
+
+def _tail(a: str, b: str) -> int:
+    """두 줄 끝에서 같은 글자 수."""
+    n = 0
+    while n < min(len(a), len(b)) and a[-1 - n] == b[-1 - n]:
+        n += 1
+    return n
+
+
+def loop_free(text: str) -> list[str]:
+    """되풀이에 빠지기 전의 줄들 — 앞에 나온 줄과 똑같은 줄, 같은 간격으로 세는 수의 셋째 줄('203.0 / 203.1 / 203.2' — 셋 모두
+    뺀다), 끝 LOOP_TAIL 글자가 같은 셋째 줄('<n> 온열질환자 … 온(°C)' — 셋 모두 뺀다) 가운데 먼저 나오는 곳에서 멈춘다. 빈 줄은 뺀다."""
+    out, seen = [], set()
+    for ln in (s.strip() for s in text.split("\n")):
+        if not ln:
+            continue
+        if ln in seen:
+            break
+        if len(out) >= 2:
+            a, b, c = _line_num(out[-2]), _line_num(out[-1]), _line_num(ln)
+            if (None not in (a, b, c) and b != a and abs((b - a) - (c - b)) < 1e-9) \
+                    or min(_tail(out[-2], out[-1]), _tail(out[-1], ln)) >= LOOP_TAIL:
+                del out[-2:]
+                break
+        seen.add(ln)
+        out.append(ln)
+    return out
+
+
+def salvage(text: str, kind: str, body: str) -> list[str] | None:
+    """잘린 그림 글(출력 한도·되풀이)에서 둘 줄 — 되풀이를 찾아(loop_free) 그 앞 줄들만. 그래프는 그 줄이 SALVAGE_MIN_LINES 개
+    이상일 때만 둔다(짧으면 앞줄의 값도 지어낸 것이었다 — 실측 test3.pdf 'LON 125.4'), 되풀이를 못 찾은 잘린 그래프 글도 버린다.
+    그림은 되풀이를 못 찾았으면 그대로, 찾았으면 한글 낱말의 VOCAB_MIN 이상이 본문(body_text)에 있을 때만 둔다(지어낸 글 — 실측
+    test5.pdf 17쪽 '[대통령 엄항 대통 …]'). None 이면 모두 버린다."""
+    whole = [s.strip() for s in text.split("\n") if s.strip()]
+    lines = loop_free(text)
+    if len(lines) == len(whole):                       # 되풀이를 못 찾았다
+        return whole if kind != "chart" else None
+    if not lines:                                      # 첫 줄부터 되풀이 — 둘 줄이 없다
+        return None
+    if kind == "chart":
+        return lines if len(lines) >= SALVAGE_MIN_LINES else None
+    words = _HAN_WORD.findall("\n".join(lines))
+    return lines if not words or sum(w in body for w in words) >= VOCAB_MIN * len(words) else None
+
+
+def _noise(f: Block, body: str) -> None:
+    """그림 속 글자 읽기가 지어낸 글 — 가나·기호뿐인 글('ふ～～～'·'うっ' — 글 없는 만화·삽화, 실측 test2.pdf 8쪽)은 버린다. 잘린 글은
+    되풀이 앞 줄만 둔다(salvage): 그래프 글은 그 줄이 짧으면 모두 버리고(실측 test3.pdf — 등고선 지도 '203.0, 203.1 …', 그래프
+    '100.0 / 경수량' 되풀이), 길면 둔다(실측 test4.pdf 10쪽 — 값 표지 20줄 뒤 되풀이), 그림 글은 되풀이를 잘라 내고 본문과 안 맞으면
+    버린다. 버린 글의 잘림 표시는 기록으로 옮긴다(출력에 남은 잘린 글이 없다). 남긴 잘린 글은 QC 가 잘림으로 센다."""
+    if not f.figure_text:
+        return
+    if not _letters(f.figure_text):
+        lines = None
+    elif f.truncated:
+        lines = salvage(f.figure_text, f.type, body)
+    else:
+        return
+    before = [s for s in f.figure_text.split("\n") if s.strip()]
+    if lines is None:
         f.provenance = (f.provenance or []) + [{"rule": "figure_text_noise", "before": f.figure_text[:40],
                                                 **({"truncated": f.truncated} if f.truncated else {})}]
         f.figure_text, f.truncated = None, None
+    elif len(lines) < len(before):
+        f.provenance = (f.provenance or []) + [{"rule": "figure_text_loop", "kept": len(lines), "lines": len(before)}]
+        f.figure_text = "\n".join(lines)
 
 
 def _side(page: Page, b: Block, f: Block) -> float:

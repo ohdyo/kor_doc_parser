@@ -6,7 +6,9 @@ import pytest
 
 from kdp.io.ids import doc_dirname
 from kdp.io.write import read_json_gz
-from kdp.pipeline import RawIncompleteError, describe, parse_pdf, reassemble
+from kdp.assemble.figures import ocr_region
+from kdp.figure_ocr import scale_for
+from kdp.pipeline import RawIncompleteError, describe, ocr_figures, parse_pdf, reassemble
 from kdp.schema import json_schema
 from tests.fixtures.fake_vlm import FakeVLM
 from tests.fixtures.stub_engine import StubEngine
@@ -94,6 +96,45 @@ def test_figure_description_parse_reassemble_describe(tmp_path, korean_font, set
         assert {f: (d / f).read_bytes() for f in before} == before
         s.env.describer.server_url = vlm.url
         assert describe(d, s)[1:] == (0, []) and len(vlm.requests) == 2
+
+
+LOC8 = "<|LOC_BEGIN|>" + "".join(f"<|LOC_{i}|>" for i in range(8)) + "<|LOC_END|>"
+
+
+@pytest.mark.parametrize("prompt, limit, reply", [
+    ("Spotting:", 3072, f"<|TEXT_START|>남서쪽 23.1<|TEXT_END|>{LOC8}<|TEXT_START|>북동쪽 18.4<|TEXT_END|>{LOC8}"),   # 기본 설정
+    ("OCR:", 1024, "남서쪽 23.1\n북동쪽 18.4")])
+def test_figure_ocr_parse_reassemble_and_command(tmp_path, korean_font, settings, prompt, limit, reply):
+    """그림 다시 읽기 — parse 가 그래프를 원본 PDF 에서 다시 그려(넓힌 영역·288dpi) 엔진 VLM 서버에 되풀이 벌점·낮은 한도로 보내 그림
+    글에 합치고(다시 읽은 줄을 앞에, 같은 값 줄은 한 번 — Spotting: 은 위치 토큰을 뗀 글만), 재조립은 서버 없이 같은 출력을 내며,
+    kdp figure-ocr 는 기록된 그림을 다시 부르지 않는다."""
+    with FakeVLM(lambda query, image: (200, reply, "stop")) as vlm:
+        s = settings.model_copy(deep=True)
+        s.parse.figure_ocr = s.parse.figure_ocr.model_copy(update={"enabled": True, "model": "served-name", "prompt": prompt,
+                                                                   "max_tokens": limit})
+        s.env.vlm.server_url = vlm.url
+        _, doc, d = _parse(tmp_path, report_pdf(korean_font, 2), StubEngine(chart=True), s)
+        figs = [(p, b) for p in doc.pages for b in p.blocks if b.type == "chart"]
+        assert [b.figure_text for _, b in figs] == ["남서쪽 23.1\n북동쪽 18.4\n기온(℃)"] * 2 and doc.qc.unread_figures == 0
+        req = vlm.requests[0]
+        assert len(vlm.requests) == 2 and (req["query"], req["max_completion_tokens"]) == (prompt, limit)
+        assert (req["body"]["repetition_penalty"], req["body"]["skip_special_tokens"]) == (1.05, prompt == "OCR:")
+        region = ocr_region(*figs[0], 6)
+        k = scale_for(region, 288, 1_605_632)
+        assert abs(req["size"][0] - (region[2] - region[0]) * k) <= 2 and abs(req["size"][1] - (region[3] - region[1]) * k) <= 2
+        before = {f: (d / f).read_bytes() for f in ("document.json", "blocks.jsonl", "document.md", "document.rag.md")}
+        s.env.vlm.server_url = None                                               # 재조립은 기록만 읽는다
+        reassemble(d, s)
+        assert {f: (d / f).read_bytes() for f in before} == before
+        s.env.vlm.server_url = vlm.url
+        assert ocr_figures(d, s)[1:] == (0, []) and len(vlm.requests) == 2
+
+
+def test_figure_ocr_enabled_needs_server_before_engine_runs(tmp_path, korean_font, settings):
+    s = settings.model_copy(deep=True)
+    s.parse.figure_ocr.enabled, s.env.vlm.server_url = True, None
+    with pytest.raises(ValueError, match="vlm.server_url"):
+        _parse(tmp_path, report_pdf(korean_font, 1), StubEngine(fail_after=0), s)   # 엔진을 돌리기 전에 멈춘다
 
 
 def test_describe_enabled_needs_server_before_engine_runs(tmp_path, korean_font, settings):

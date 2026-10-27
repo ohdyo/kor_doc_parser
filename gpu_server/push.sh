@@ -30,6 +30,14 @@ rsync -az -e "$E" ~/.paddlex/official_models/PP-DocLayoutV3 ~/.paddlex/official_
 if [ -d runs/t1/out_base ]; then                     # RAG 하류 평가(D21, rag_eval.sh)의 kdp 기준 출력 — test2~5 원래 A.X 파싱(raw 포함)
   rsync -az -e "$E" --relative runs/t1/out_base "$DEST:/workspace/kor_doc_parser/"
 fi
+RAG=()                                                # RAG 하류 평가 기준(D21·D22) — 비교군 출력·2회차 파이프 표 출력·2회차 LightRAG 저장소와
+for f in compare kdp_pipe lightrag_rpipe lightrag_eval_rpipe.log; do   # 그 로그. 새로 켠 서버에서 다시 만들지 않게(runs/ 는 커밋하지 않는다)
+  [ -e "runs/rag_eval/$f" ] && RAG+=("runs/rag_eval/$f")
+done
+if [ ${#RAG[@]} -gt 0 ]; then
+  $E "$DEST" 'mkdir -p /workspace/rag_eval'
+  rsync -az -e "$E" "${RAG[@]}" "$DEST:/workspace/rag_eval/"
+fi
 for pdf in "${PUBLIC[@]}"; do                        # 비교군 결과(텍스트 레이어·docling·PaddleOCR-VL 기본) — 서버에서 다시 돌리지 않게
   id=$(sha256sum "$pdf" | cut -c1-64)
   [ -d "out/$id/compare" ] && rsync -az -e "$E" --relative out/"$id"/compare/{textlayer,docling,paddle_default}.json \

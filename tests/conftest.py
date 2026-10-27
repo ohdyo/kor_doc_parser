@@ -13,6 +13,7 @@ os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 def settings():
     s = load_settings()
     s.parse.describe.enabled = False      # 그림 설명(D19)은 켜는 시험만 가짜 VLM 으로 — 기본 설정이 켜도 다른 시험이 설명 서버를 부르지 않게
+    s.parse.figure_ocr.enabled = False    # 그림 다시 읽기(D23)도 같다
     return s
 
 

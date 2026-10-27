@@ -1,4 +1,4 @@
-"""kdp 명령(설계 8장): doctor · parse · reassemble · describe · schema. batch·qc·export-ls 는 M4."""
+"""kdp 명령(설계 8장): doctor · parse · reassemble · figure-ocr · describe · schema. batch·qc·export-ls 는 M4."""
 from __future__ import annotations
 
 import json
@@ -80,6 +80,16 @@ def doctor(env: Optional[Path] = EnvOpt, config: Optional[Path] = CfgOpt):
         except (OSError, ValueError) as e:
             rows.append(("FAIL", "그림 설명 서버", f"{s.env.describer.server_url} — {e}"))
 
+    if s.parse.figure_ocr.enabled:                       # 그림 다시 읽기 — 엔진과 같은 VLM 서버, 이름은 파싱 설정
+        from .engine.paddle_vl import served_models
+
+        try:
+            served = served_models(s.env.vlm.server_url, s.env.vlm.api_key)
+            ok = s.parse.figure_ocr.model in served
+            rows.append(("OK" if ok else "FAIL", "그림 다시 읽기 모델 이름", f"요청 {s.parse.figure_ocr.model} / 서버 {list(served)}"))
+        except (OSError, ValueError) as e:
+            rows.append(("FAIL", "그림 다시 읽기 서버", f"{s.env.vlm.server_url} — {e}"))
+
     font = s.env.test.korean_font
     rows.append(("OK" if font and Path(font).exists() else "WARN", "테스트 한글 글꼴", str(font)))
 
@@ -99,6 +109,8 @@ def parse(pdf: Path, out: Optional[Path] = typer.Option(None, "-o", "--out", hel
     doc = parse_pdf(pdf, out, s)
     out_dir = Path(out or s.env.paths.out_dir) / doc_dirname(doc.doc_id)
     typer.echo(f"{doc.doc_id}  qc={doc.qc.status}  → {out_dir}")
+    if doc.qc.unread_figures:
+        typer.echo(f"  다시 읽지 못한 그림 {doc.qc.unread_figures}개 — VLM 서버·figure_ocr.model 을 확인하고 kdp figure-ocr(이어서 kdp describe)")
     if doc.qc.undescribed_figures:
         typer.echo(f"  그림 설명을 못 받은 그림 {doc.qc.undescribed_figures}개 — 설명 서버를 확인하고 kdp describe")
 
@@ -113,6 +125,34 @@ def reassemble(path: Path, env: Optional[Path] = EnvOpt, config: Optional[Path] 
     for d in dirs:
         doc = _reassemble(d, s)
         typer.echo(f"{doc.doc_id}  qc={doc.qc.status}")
+
+
+@app.command("figure-ocr")
+def figure_ocr(path: Path, pdf: Optional[Path] = typer.Option(None, "--pdf", help="원본 PDF(기본 raw/doc.json 의 경로) — 문서 폴더 하나일 때"),
+               env: Optional[Path] = EnvOpt, config: Optional[Path] = CfgOpt):
+    """그림 다시 읽기 — 읽기 기록이 없는 그림만 원본 PDF 에서 다시 그려 VLM 에 보내고 다시 조립한다. 문서 폴더 하나 또는 그것들이 든
+    출력 폴더. 그림 글이 바뀌면 그림 설명 물음도 바뀌므로 이어서 kdp describe 를 돌린다."""
+    from .pipeline import ocr_figures
+
+    s = load_settings(env, config)
+    if not s.parse.figure_ocr.enabled:
+        typer.echo("figure_ocr.enabled 가 꺼져 있다(configs/parse/default.yaml)")
+        raise typer.Exit(1)
+    if not s.env.vlm.server_url:
+        typer.echo("configs/env.yaml 의 vlm.server_url 이 없다")
+        raise typer.Exit(1)
+    if not s.parse.output.keep_raw:                      # 재조립이 raw/ 를 지운다
+        typer.echo("figure_ocr 는 output.keep_raw true 가 필요하다(읽기 기록이 raw/ 에 있다)")
+        raise typer.Exit(1)
+    dirs = [path] if (path / "raw").is_dir() else sorted(p for p in path.iterdir() if (p / "raw").is_dir())
+    if pdf and len(dirs) != 1:
+        typer.echo("--pdf 는 문서 폴더 하나일 때만 쓴다")
+        raise typer.Exit(1)
+    for d in dirs:
+        doc, new, failed = ocr_figures(d, s, pdf)
+        typer.echo(f"{doc.doc_id}  새 읽기 {new}  실패 {len(failed)}  qc={doc.qc.status}")
+        for f in failed:
+            typer.echo(f"  실패 {f}")
 
 
 @app.command()

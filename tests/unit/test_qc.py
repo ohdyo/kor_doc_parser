@@ -55,6 +55,18 @@ def test_truncated_blocks_counted_even_when_merged_or_emptied():
     assert (qc.status, qc.truncated_blocks) == ("review", 2)
 
 
+def test_unread_figures_counted():
+    """다시 읽을 그림에 읽기 기록이 없으면 검수로 — kdp figure-ocr 로 채운다."""
+    pages = [Page(page_no=1, sheet_no=1, size=(595, 842), blocks=[
+        Block(id="p1.b01", type="chart", bbox=(70, 100, 520, 400), img_path="imgs/p1.b01.png",
+              provenance=[{"rule": "figure_ocr_missing"}]),
+        Block(id="p1.b02", type="text", bbox=(70, 420, 520, 600), text="본문")])]
+    doc = Document(doc_id="sha256:ab", source=Source(paths=["a.pdf"], pages=1),
+                   parser=ParserInfo(kdp_version="0", engine={}, engine_hash="e", assemble_hash="a", run_at="t"), pages=pages)
+    qc = run_checks(doc, [_raw(1, 0.05)], QCCfg()).qc
+    assert (qc.status, qc.reasons, qc.unread_figures) == ("review", ["figure_ocr_missing"], 1)
+
+
 def test_undescribed_figures_counted():
     """설명할 그림에 설명 응답이 없으면(D19) 검수로 — 버린 쪽의 그림은 세지 않는다."""
     miss = [{"rule": "figure_desc_missing"}]

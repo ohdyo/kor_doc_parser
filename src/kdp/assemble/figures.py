@@ -5,14 +5,17 @@ import hashlib
 import html as htmllib
 import json
 import re
+import unicodedata
+from difflib import SequenceMatcher
 from typing import Callable, NamedTuple
 
 from ..classify.blocks import sentences
 from ..geometry import local, page_size
 from ..schema import Block, Document, Page
+from .normalize import norm_text
 from .order import kept
 from .paragraphs import titled
-from .tables import appendage, attached
+from .tables import _letters, appendage, attached, body_text, salvage
 
 _TABLE_IMG = re.compile(r'<img src="(imgs/img_in_[^"]+)" alt="Image"" />')
 _OUR_IMG = re.compile(r'<img src="imgs/([^"]+)"')
@@ -435,6 +438,130 @@ def ground(text: str, ref: str, truncated: bool = False, context: str = "",
         else:
             out.kept.append(t)
     return out._replace(kept=out.kept[:DESC_MAX_SENTENCES], dropped=out.dropped + cut)
+
+
+# ---- 그림 다시 읽기(그림 속 글자 — 테스트_결과 14.10) ----
+
+OCR_MIN_PIXELS = 112_896      # PaddleOCR-VL 에 보내는 화소 하한(PaddleX 기본)
+OCR_NEAR = 0.8                # 엔진 글 줄과 다시 읽은 줄의 글자 일치가 이만큼 이상이면 같은 줄 — 다시 읽은 쪽을 둔다('주세' → '추세')
+_SPOT_TEXT = re.compile(r"<\|TEXT_START\|>(.*?)<\|TEXT_END\|>", re.S)
+_SPOT_LOC_BLOCK = re.compile(r"<\|LOC_BEGIN\|>(.*?)<\|LOC_END\|>", re.S)
+_SPOT_LOC = re.compile(r"<\|LOC_(\d+)\|>")
+_DIGITS = re.compile(r"\d+")
+
+
+def ocr_targets(doc: Document, cfg) -> list[tuple[Page, Block]]:
+    """다시 읽을 그림 — 살린 쪽의 살린 그림 블록 가운데 types 갈래(기본 설정은 그래프 chart 만)이고 논리 페이지 넓이의 min_area 이상.
+    엔진 글이 끝까지 읽힌 그림도 읽는다(값 표지를 건너뛰거나 한두 글자를 잘못 읽고도 정상으로 끝난다 — 실측 test4.pdf 5쪽·test3.pdf 7쪽)."""
+    out = []
+    for page in (p for p in doc.pages if p.keep):
+        w, h = page_size(page)
+        for b in page.blocks:
+            if b.type not in cfg.types or not b.keep or b.merged_into:
+                continue
+            x0, y0, x1, y1 = b.bbox
+            if (x1 - x0) * (y1 - y0) >= cfg.min_area * w * h:
+                out.append((page, b))
+    return out
+
+
+def ocr_region(page: Page, b: Block, pad: float) -> tuple[float, float, float, float]:
+    """다시 그릴 시트 영역(표시 pt) — 그림 상자를 pad 만큼 넓혀(검출 상자가 그림 맨 위 제목 줄을 몇 화소 자른다 — 실측 test3.pdf
+    12쪽) 시트 안으로 자른다."""
+    x0, y0, x1, y1 = b.bbox
+    w, h = page.size
+    return round(max(0.0, x0 - pad), 2), round(max(0.0, y0 - pad), 2), round(min(w, x1 + pad), 2), round(min(h, y1 + pad), 2)
+
+
+def ocr_key(cfg, b: Block, region) -> str:
+    """읽기 기록의 열쇠 — 모델·블록·영역·dpi·물음·생성 한도·화소 상한·되풀이 벌점이 같아야 같은 읽기다. 그림 글은 넣지 않는다(조립
+    규칙이 그림 글을 바꿔도 기록을 찾는다)."""
+    s = json.dumps([cfg.model, b.id, list(region), cfg.dpi, cfg.prompt, cfg.max_tokens, cfg.max_pixels, cfg.repetition_penalty],
+                   ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
+
+def spotting_lines(raw: str) -> list[str]:
+    """'Spotting:' 응답 → 글 줄 — '<|TEXT_START|>글<|TEXT_END|>' 뒤에 위치 토큰 8개 이상이 든 짝만, 그런 짝이 없으면 위치 토큰 8개마다
+    그 앞 글(PaddleX post_process_for_spotting 과 같다)."""
+    out = [t.strip() for t, loc in zip(_SPOT_TEXT.findall(raw), _SPOT_LOC_BLOCK.findall(raw)) if len(_SPOT_LOC.findall(loc)) >= 8]
+    if not out:
+        locs, last = list(_SPOT_LOC.finditer(raw)), 0
+        for i in range(0, len(locs) - 7, 8):
+            out.append(raw[last:locs[i].start()].strip())
+            last = locs[i + 7].end()
+    return [t for t in out if t]
+
+
+def _flat(s: str) -> str:
+    return "".join(unicodedata.normalize("NFKC", s).split())
+
+
+def _inside(e: str, r: str) -> bool:
+    """e 가 r 안에 든다 — 수의 한가운데에서 잘리지 않게('5명미만' 은 '10~15명미만' 안에, '1,365' 는 '11,365명' 안에 들지 않는다)."""
+    return re.search(("(?<!\\d)" if e[:1].isdigit() else "") + re.escape(e) + ("(?!\\d)" if e[-1:].isdigit() else ""), r) is not None
+
+
+def _near(e: str, r: str) -> bool:
+    """엔진 줄 e 를 다시 읽은 줄 r 이 다르게 읽은 것 — 띄어쓰기를 빼고 같거나, e(넷 글자 이상)가 r 안에 들었거나, 숫자 덩어리가 같고
+    r 이 e 안에 들지 않으며 글자 일치가 OCR_NEAR 이상('주세' → '추세'). 숫자만 다른 줄('2025년'·'2026년')과 r 에 없는 글이 더 붙은
+    e('온열질환자수(명) 폭염일수')는 다른 줄이다."""
+    e, r = _flat(e), _flat(r)
+    return e == r or (len(e) >= 4 and _inside(e, r)) or (r not in e and _DIGITS.findall(e) == _DIGITS.findall(r)
+                                                   and SequenceMatcher(None, e, r).ratio() >= OCR_NEAR)
+
+
+def _beside(page: Page, b: Block, region) -> list[str]:
+    """다시 읽은 영역에 걸친 살린 글 블록과 그림 제목의 글(띄어쓰기 뺀) — 넓힌 영역에 든 제목·단위 줄을 그림 글에 또 넣지 않게."""
+    x0, y0, x1, y1 = region
+    return [_flat(o.text) for o in page.blocks if o is not b and o.keep and not o.merged_into and o.text
+            and (o.id == b.caption_id or (o.bbox[0] < x1 and o.bbox[2] > x0 and o.bbox[1] < y1 and o.bbox[3] > y0))]
+
+
+def attach_figure_ocr(doc: Document, cache: dict[str, dict], cfg) -> Document:
+    """그림 다시 읽기 기록(raw/figure_ocr.jsonl)을 그림 글에 합친다 — 같은 열쇠의 기록에서 다시 읽은 줄(길이 한도로 잘렸으면 되풀이
+    앞 줄만 — salvage, 못 살리면 엔진 글 그대로)을 앞에, 엔진 글 줄 가운데 다시 읽은 줄이 대신하지 않은 것(다시 읽기가 놓친 줄·그림에
+    묶인 라벨 블록)을 뒤에 둔다. 다시 읽은 줄 하나는 엔진 줄 하나만 대신한다 — 똑같은 줄끼리 먼저, 그다음 _near('평년보다 높음'을
+    다시 읽었다고 '평년보다 낮음'이 지워지지 않게). 다시 읽은 줄 가운데 가나·기호뿐인 줄(_noise 와 같다), 한자·가나가 섞인 줄(한국
+    문서 그림에서 다시 읽기가 한글을 바꿔 쓴 글 — 실측 test2~5 Spotting: 그래프 77줄 모두 틀림, '4月'·깨진 범례), 그림 제목·영역에
+    걸친 글 블록에 이미 있는 줄은 뺀다(엔진 글 줄은 거르지 않는다). 끝까지 읽었으면 잘림 표시를 지운다(남은 글이 다 읽은 글이다). 기록이 없는 그림은 표시만 해 QC 가
+    센다(kdp figure-ocr 로 채운다)."""
+    if not cfg.enabled:
+        return doc
+    doc = doc.model_copy(deep=True)
+    body = body_text(doc)
+    for page, b in ocr_targets(doc, cfg):
+        region = ocr_region(page, b, cfg.pad_pt)
+        hit = cache.get(ocr_key(cfg, b, region))
+        if hit is None:
+            b.provenance = (b.provenance or []) + [{"rule": "figure_ocr_missing"}]
+            continue
+        cut = hit.get("finish_reason") == "length"
+        text = norm_text(hit.get("text") or "", strict=True)
+        lines = salvage(text, b.type, body) if cut else [s.strip() for s in text.split("\n") if s.strip()]
+        near = _beside(page, b, region)
+        lines = [ln for ln in lines or [] if _letters(ln) and not _FOREIGN.search(ln)
+                 and not (len(_flat(ln)) >= 4 and any(_inside(_flat(ln), t) for t in near))]
+        rec = {"rule": "figure_ocr", "model": cfg.model, **({"truncated": "length"} if cut else {})}
+        if not lines:
+            b.provenance = (b.provenance or []) + [{**rec, "added": 0}]
+            continue
+        engine = [s.strip() for s in (b.figure_text or "").split("\n") if s.strip()]
+        free, left, rest = [_flat(r) for r in lines], [], []
+        for e in engine:                               # 똑같은 줄끼리 먼저
+            if _flat(e) in free:
+                free.remove(_flat(e))
+            else:
+                left.append(e)
+        for e in left:                                 # 다시 읽은 줄 하나는 엔진 줄 하나만 대신한다
+            r = next((r for r in free if _near(e, r)), None)
+            if r is None:
+                rest.append(e)
+            else:
+                free.remove(r)
+        b.provenance = (b.provenance or []) + [{**rec, "added": len(free), "replaced": len(engine) - len(rest)}]
+        b.figure_text, b.truncated = "\n".join(lines + rest), "length" if cut else None
+    return doc
 
 
 def attach_descriptions(doc: Document, cache: dict[str, dict], cfg) -> Document:

@@ -8,7 +8,8 @@
 기본(사용자 결정 2026-10-26)인 구조 자르기(LangChain 재귀 분할, 512토큰), F 는 ainsert 의 고정 토큰 자르기(사용자가 정한 512토큰과
 LightRAG 기본 1,200토큰). 구조: 빈 줄로 가른 덩이를 제목 줄에서 끊고 800자(512토큰 안팎)까지 모음(제목·빈 줄을 보는 도구), 길이:
 800자 창·100자 겹침(시험용 — 패키지 없이). 검색기 — BM25(글자 2-gram, 모델 없음)·BGE-M3(MIT,
-밀집 — GPU, LightRAG naive 와 같은 벡터 검색). 네 문서의 조각을 한 말뭉치에 넣고 찾는다(다른 문서 조각은 근거가 아니다). 정답 eval/golden/rag_questions.yaml —
+밀집 — GPU, LightRAG naive 와 같은 벡터 검색)·BGE-M3 → 다시 순위(위 20개를 교차 인코더 bge-reranker-v2-m3 로, Apache-2.0 —
+D23, 테스트_결과 14.10). 네 문서의 조각을 한 말뭉치에 넣고 찾는다(다른 문서 조각은 근거가 아니다). 정답 eval/golden/rag_questions.yaml —
 근거 낱말 묶음마다 대안 하나 이상이 든 조각이 근거다. 공백·HTML 태그·주석·마크다운 기호·글머리표는 떼고 비교한다(표기 차이로 계통이
 갈리지 않게). LightRAG 저장소로 직접 묻는 평가(그래프 포함)는 eval/lightrag_eval.py.
 결과: <out>/report.md(표) · report.json(값) · ranks.jsonl(질문별 순위)."""
@@ -33,15 +34,18 @@ ROOT = Path(__file__).resolve().parents[1]
 QUESTIONS = ROOT / "eval" / "golden" / "rag_questions.yaml"
 SYSTEMS = ("textlayer", "paddle_default", "docling", "kdp", "kdp_rag")
 NAMES = {"textlayer": "텍스트 레이어", "paddle_default": "PaddleOCR-VL 기본", "docling": "docling",
-         "kdp": "kdp document.md", "kdp_rag": "kdp document.rag.md", "kdp_rag_pipe": "kdp document.rag.md · 파이프 표"}
+         "kdp": "kdp document.md", "kdp_rag": "kdp document.rag.md", "kdp_rag_pipe": "kdp document.rag.md · 파이프 표",
+         "kdp_rag_ocr": "kdp document.rag.md · 그림 다시 읽기(OCR:)", "kdp_rag_spot": "kdp document.rag.md · 그림 다시 읽기(Spotting:)"}
 KDP_FILES = {"kdp": "document.md", "kdp_rag": "document.rag.md"}
-RETRIEVER_NAMES = {"bm25": "BM25(글자 2-gram)", "bge-m3": "BGE-M3"}
+RETRIEVER_NAMES = {"bm25": "BM25(글자 2-gram)", "bge-m3": "BGE-M3", "bge-m3+rr": "BGE-M3 → 다시 순위"}
 TYPES = ("문단", "표", "그림")
 SIZE, OVERLAP = 800, 100         # 구조·길이 자르기의 조각 길이·겹침(글자) — 512토큰 안팎
 LR_TOKENS, LR_OVERLAP = 512, 100   # LightRAG 청크(사용자 결정 2026-10-26)·겹침(LightRAG 기본) — 고정 토큰, tiktoken gpt-4o-mini
 LR_DEFAULT = 1200                  # LightRAG 기본 청크 — 견주는 값
 K, MRR_K = 5, 10
 Q_TOKENS, P_TOKENS = 256, 4096   # BGE-M3 에 넣는 질문·조각 최대 토큰(표 HTML 은 글자당 토큰이 많다)
+RR_MODEL, RR_POOL, RR_TOKENS = "BAAI/bge-reranker-v2-m3", 20, 2048   # 다시 순위 — 교차 인코더(Apache-2.0)·첫 검색 위 몇 개·쌍 최대 토큰
+#   (2048 — 1,200토큰 조각이 쌍으로 1,800토큰 가까이 된다, 모델 한도 8192)
 _COMMENT = re.compile(r"<!--.*?-->", re.S)
 _TAG = re.compile(r"</?[A-Za-z][^<>]*>")           # HTML 태그만 — '<표 1>' 같은 한글 꺾쇠 제목은 글자다
 _SKIP = re.compile(r"[\s|#*_`~\\\-‐‑‒–—―−•·‧∙・ㆍᆞ▪▫◦○●■□◆◇▶►∼]+")   # 공백·마크업·글머리표·이음표·가운뎃점
@@ -264,6 +268,48 @@ class Dense:
         return self.encode(queries, Q_TOKENS) @ self.encode(chunks, P_TOKENS).T
 
 
+class Reranker:
+    """교차 인코더 다시 순위(기본 BAAI/bge-reranker-v2-m3) — 질문·조각 쌍을 함께 읽은 로짓에 시그모이드(0~1, FlagEmbedding 의
+    normalize 와 같다). 같은 쌍은 한 번만 센다. pool = 첫 검색에서 다시 순위 매길 조각 수."""
+
+    def __init__(self, model: str = RR_MODEL, device: str = "cuda", pool: int = RR_POOL, batch: int = 16,
+                 max_length: int = RR_TOKENS):
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+        self.torch, self.device, self.pool, self.batch, self.max_length, self.cache = torch, device, pool, batch, max_length, {}
+        self.tok = AutoTokenizer.from_pretrained(model)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model).to(device).eval()
+        if device.startswith("cuda"):
+            self.model.half()
+        self.name = f"{model}@{getattr(self.model.config, '_commit_hash', None) or '?'}"
+
+    def score(self, query: str, docs: list[str]) -> list[float]:
+        todo = sorted({d for d in docs if (query, d) not in self.cache}, key=len)   # 길이가 비슷한 것끼리 묶어 덧댐을 줄인다
+        for i in range(0, len(todo), self.batch):
+            part = todo[i:i + self.batch]
+            enc = self.tok([query] * len(part), part, padding=True, truncation="only_second", max_length=self.max_length,
+                           return_tensors="pt").to(self.device)
+            with self.torch.inference_mode():
+                logits = self.model(**enc).logits.view(-1).double()   # float32 시그모이드는 로짓 17쯤부터 1.0 으로 같아진다
+            for d, s in zip(part, self.torch.sigmoid(logits).cpu().tolist()):
+                self.cache[(query, d)] = s
+        return [self.cache[(query, d)] for d in docs]
+
+
+def rerank_scores(scores: np.ndarray, chunks: list[str], queries: list[str], score: Callable[[str, list[str]], list[float]],
+                  pool: int = RR_POOL) -> np.ndarray:
+    """질문마다 첫 검색 점수의 위 pool 개(같은 점수는 앞 조각 먼저 — first_rank 와 같은 차례)를 교차 인코더 점수 차례로(같은 점수는
+    첫 검색 차례) 맨 앞에 두고, 나머지 차례는 그대로 — 첫 검색이 가져온 조각만 다시 순위 매기는 LightRAG 와 같다."""
+    out = scores.astype(float)
+    for qi, q in enumerate(queries):
+        top = np.argsort(-scores[qi], kind="stable")[:pool]
+        s = score(q, [chunks[i] for i in top])
+        order = sorted(range(len(top)), key=lambda j: (-s[j], j))
+        out[qi, top[order]] = scores[qi].max() + 1 + np.arange(len(top), 0, -1)   # 다시 매긴 차례대로 첫 검색 점수보다 위에
+    return out
+
+
 # ---- 평가 ----
 
 def first_rank(scores: np.ndarray, gold: set[int]) -> int | None:
@@ -275,7 +321,8 @@ def first_rank(scores: np.ndarray, gold: set[int]) -> int | None:
 
 
 def evaluate(questions: list[dict], texts: dict[str, dict[str, str]], retrievers: list[str],
-             chunkers: dict[str, Callable[[str], list[str]]], dense: Dense | None = None) -> tuple[list[dict], list[dict]]:
+             chunkers: dict[str, Callable[[str], list[str]]], dense: Dense | None = None,
+             reranker: Reranker | None = None) -> tuple[list[dict], list[dict]]:
     """(질문별 줄, 조각 통계) — 계통·자르기·검색기마다 첫 근거 조각 순위와 근거가 글·조각에 있는지."""
     rows, stats = [], []
     queries = [q["q"] for q in questions]
@@ -291,6 +338,8 @@ def evaluate(questions: list[dict], texts: dict[str, dict[str, str]], retrievers
             body = [c for _, c in chunks]
             for retriever in retrievers:
                 scores = bm25_scores(body, queries) if retriever == "bm25" else dense.scores(body, queries)
+                if retriever == "bge-m3+rr":
+                    scores = rerank_scores(scores, body, queries, reranker.score, reranker.pool)
                 for q, g, s, t in zip(questions, gold, scores, in_text):
                     rows.append({"retriever": retriever, "chunker": chunker, "system": system, "id": q["id"],
                                  "doc": q["doc"], "type": q["type"], "rank": first_rank(s, g), "in_chunks": bool(g),
@@ -325,10 +374,11 @@ def intro(questions: list[dict]) -> str:
 
 
 def render(summary: dict, stats: list[dict], questions: list[dict], systems: list[str], retrievers: list[str],
-           chunkers: list[str], check: tuple[int, int], dense_name: str | None) -> str:
+           chunkers: list[str], check: tuple[int, int], dense_name: str | None, rr: Reranker | None = None) -> str:
     st = {(s["system"], s["chunker"]): s for s in stats}
     lines = ["# RAG 하류 평가 축소판(D21) — 같은 자르기·같은 검색기", "", intro(questions),
              "검색기: " + ", ".join(RETRIEVER_NAMES[r] + (f" `{dense_name}`" if r == "bge-m3" and dense_name else "")
+                                  + (f"(위 {rr.pool}개를 `{rr.name}` 로)" if r == "bge-m3+rr" and rr else "")
                                   for r in retrievers) + ". 네 문서 조각을 한 말뭉치로 찾는다.",
              (f"지표 점검 — 텍스트 레이어 글에 근거가 있는 문단·표 질문: {check[0]}/{check[1]} (모두여야 한다 — 아니면 정답이나 비교 규칙이 틀렸다)."
               if check[1] else "지표 점검 못 함 — 텍스트 레이어 계통이 없다(비교군 출력을 확인한다)."),
@@ -354,10 +404,12 @@ def main(argv=None) -> None:
     ap.add_argument("--compare", type=Path, default=None, help="eval/compare.py -o 출력 폴더(텍스트 레이어·PaddleOCR-VL 기본·docling)")
     ap.add_argument("--questions", type=Path, default=QUESTIONS)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--retrievers", default="bm25,bge-m3")
+    ap.add_argument("--retrievers", default="bm25,bge-m3,bge-m3+rr", help="bm25·bge-m3·bge-m3+rr(BGE-M3 위 조각을 교차 인코더로 다시 순위)")
     ap.add_argument("--chunkers", default="lightrag_r,lightrag,lightrag1200,structure")
     ap.add_argument("--variant", action="append", help="'이름=폴더' — 다른 설정으로 다시 조립한 kdp 출력(document.rag.md)을 계통으로 더한다")
     ap.add_argument("--model", default="BAAI/bge-m3")
+    ap.add_argument("--rerank-model", default=RR_MODEL)
+    ap.add_argument("--rerank-pool", type=int, default=RR_POOL, help="다시 순위 매길 첫 검색 조각 수")
     ap.add_argument("--device", default="cuda")
     a = ap.parse_args(argv)
     questions = load_questions(a.questions)
@@ -368,17 +420,19 @@ def main(argv=None) -> None:
     texts = system_texts(a.kdp, a.compare, {q["doc_id"] for q in questions}, variants=parse_variants(a.variant))
     if not texts:
         sys.exit("평가할 계통이 없다")
-    dense = Dense(a.model, a.device) if "bge-m3" in retrievers else None
-    rows, stats = evaluate(questions, texts, retrievers, {c: CHUNKERS[c][1] for c in chunkers}, dense)
+    dense = Dense(a.model, a.device) if {"bge-m3", "bge-m3+rr"} & set(retrievers) else None
+    rr = Reranker(a.rerank_model, a.device, a.rerank_pool) if "bge-m3+rr" in retrievers else None
+    rows, stats = evaluate(questions, texts, retrievers, {c: CHUNKERS[c][1] for c in chunkers}, dense, rr)
     summary = summarize(rows)
     layer = [r for r in rows if r["system"] == "textlayer" and r["type"] != "그림"
              and r["retriever"] == retrievers[0] and r["chunker"] == chunkers[0]]
     check = (sum(r["in_text"] for r in layer), len(layer))
-    report = render(summary, stats, questions, list(texts), retrievers, chunkers, check, dense.name if dense else None)
+    report = render(summary, stats, questions, list(texts), retrievers, chunkers, check, dense.name if dense else None, rr)
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "report.md").write_text(report + "\n", encoding="utf-8")
     (a.out / "report.json").write_text(json.dumps({"summary": summary, "stats": stats, "check": check,
-                                                   "model": dense.name if dense else None}, ensure_ascii=False, indent=1),
+                                                   "model": dense.name if dense else None, "reranker": rr.name if rr else None,
+                                                   "rerank_pool": rr.pool if rr else None}, ensure_ascii=False, indent=1),
                                        encoding="utf-8")
     (a.out / "ranks.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     print(report)

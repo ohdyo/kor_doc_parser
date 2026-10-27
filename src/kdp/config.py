@@ -129,6 +129,21 @@ class DescribeCfg(_Cfg):
     min_logprob: float | None = None     # 설명 문장 토큰의 평균 로그확률이 이보다 낮으면 뺀다(모델이 확신하지 못한 그림 해석) — 모델마다 잰다
 
 
+class FigureOcrCfg(_Cfg):
+    enabled: bool = False                # 그림 다시 읽기(테스트_결과 14.10) — 그림을 원본 PDF 에서 더 높은 dpi 로 다시 그려 그림 속 글자를 다시 읽는다
+    model: str = "PaddlePaddle/PaddleOCR-VL-1.6"   # 엔진 VLM 서버(env.yaml vlm.server_url)가 올린 이름과 같게
+    prompt: Literal["OCR:", "Spotting:"] = "OCR:"   # Spotting: 은 글자마다 위치를 함께 읽는 물음(작은 글자 — PaddleX 는 2배 키워 보낸다)
+    types: list[Literal["image", "chart"]] = Field(default_factory=lambda: ["image", "chart"])   # 다시 읽을 블록 갈래 — 그림(image)
+    #                                      갈래 지도·사진은 다시 읽은 줄이 24% 틀려(그래프 chart 는 6%) 기본 설정은 chart 만(테스트_결과 14.10)
+    dpi: int = 288                       # 엔진 쪽 렌더(144)의 두 배 — 그림 원본 해상도가 높은 문서(test3·test5 323~600dpi)에서 글자가 또렷해진다
+    pad_pt: float = 6.0                  # 그림 상자를 사방으로 넓힐 pt
+    max_pixels: int = 1_605_632          # 서버에 보내는 화소 상한(PaddleOCR-VL Spotting 과 같다) — 넘으면 배율을 낮춰 그린다
+    max_tokens: int = 1024               # 엔진 4096 보다 낮게 — 'OCR:' 정상 그림 읽기는 342토큰 안(실측), 넘으면 되풀이다. 'Spotting:' 은 글
+    #                                      한 덩이마다 위치 토큰 11개가 더 들어(test4 10쪽 그래프 OCR: 630·Spotting: 1,676토큰) 3,072 쯤 준다
+    repetition_penalty: float = 1.05     # 되풀이 벌점(엔진은 걸지 않아 4096토큰까지 되풀이했다)
+    min_area: float = 0.01               # 논리 페이지 넓이 대비 — 이보다 작은 그림(아이콘)은 다시 읽지 않는다
+
+
 class OutputCfg(_Cfg):
     write_markdown: bool = True
     write_rag_markdown: bool = True      # D21 — document.rag.md(앵커 없음, 표·그림 제목을 앞에, 긴 표는 머리행 되풀이 행 묶음)
@@ -150,6 +165,7 @@ class ParseConfig(_Cfg):
     meta: MetaCfg = Field(default_factory=MetaCfg)
     qc: QCCfg = Field(default_factory=QCCfg)
     describe: DescribeCfg = Field(default_factory=DescribeCfg)
+    figure_ocr: FigureOcrCfg = Field(default_factory=FigureOcrCfg)
     batch: BatchCfg = Field(default_factory=BatchCfg)
     output: OutputCfg = Field(default_factory=OutputCfg)
 
@@ -209,7 +225,7 @@ def engine_hash(s: Settings, engine_desc: dict) -> str:
 
 
 def assemble_hash(s: Settings, code_version: str) -> str:
-    """이것만 바뀌면 kdp reassemble 로 충분하다(그림 설명 모델을 바꾸면 kdp describe 로 빠진 설명을 채운다)."""
+    """이것만 바뀌면 kdp reassemble 로 충분하다(그림 다시 읽기·설명 설정을 바꾸면 kdp figure-ocr·describe 로 빠진 기록을 채운다)."""
     p = s.parse
     return digest({
         "text_layer": p.text_layer.model_dump(),
@@ -217,5 +233,6 @@ def assemble_hash(s: Settings, code_version: str) -> str:
         "meta": p.meta.model_dump(),
         "qc": p.qc.model_dump(),
         "describe": p.describe.model_dump(),
+        "figure_ocr": p.figure_ocr.model_dump(),
         "code": code_version,
     })

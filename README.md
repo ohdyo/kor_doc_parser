@@ -63,6 +63,8 @@ flowchart LR
     vlm --> raw[("raw/<br/>엔진 원시 결과")]
     raw -->|"parse 때, 또는 kdp reassemble(GPU 없이)"| asm["조립 규칙<br/>글자층 · 정규화 · 잡요소·쪽 판정<br/>표 · 제목·항목 수준 · 그림 글<br/>메타 · 개인정보 · QC"]
     asm --> out["document.json · blocks.jsonl<br/>document.md · document.rag.md · imgs/"]
+    asm -.->|"그래프"| reread["그래프 글자 다시 읽기<br/>원본 PDF 288dpi<br/>PaddleOCR-VL-1.6 Spotting:"]
+    reread -.->|"raw/figure_ocr.jsonl"| asm
     asm -.->|"그림과 함께 봐야 하는 그림"| desc["그림 설명<br/>A.X-4.0-VL-Light<br/>근거 검사 · 확신도 거르기"]
     desc -.-> out
 ```
@@ -75,6 +77,7 @@ flowchart LR
   - **D** 그래프·지도도 '보이는 글자 그대로' 읽게 합니다. 값을 지어내던 그래프 → 표 변환은 껐습니다.
 - **조립** — 원시 결과에 한국어 문서 규칙을 적용합니다: 글자층 적용·정규화 → 잡요소·공문 메타·결재란·쪽 종류 판정(표지·목차·빈 쪽·간지·결재 쪽·미기입 서식) → 표(머리행·제목·단위·출처 연결, 쪽 넘김 표 잇기) → 제목 수준·섹션 경로·항목 수준 → 그림 감싼 문단·쪽 넘김 문단 잇기 → 문서 메타 승격·개인정보 표시 → 품질 점검(QC).
 - **그림 갈래와 그림 설명** — 그림 속 글자만 꺼내면 뜻이 깨지는 그림이 많습니다(기온 지도의 '23.1 · 18.4' 는 어디가 더운지 알려 주지 않습니다). 그래서 그림마다 '글자만으로 뜻이 서는 그림'과 '그림과 함께 봐야 하는 그림'을 가르고, 그림 파일·그림 제목·그림 속 글자를 한 블록으로 묶어 냅니다. 뒤의 그림에는 A.X 가 앞뒤 본문과 이어지는 설명 문장을 붙입니다(기본 켬). 값·지명이 그림·문맥에 없는 문장, 적히지 않은 날짜나 자료 기간 밖의 때, 범례 눈금을 값의 범위로 쓴 문장, 본문을 옮겨 적은 문장, 모델이 확신하지 못한 문장은 뺍니다.
+- **그래프 글자 다시 읽기** — 엔진은 쪽을 144dpi 로 그려 그래프 속 작은 값 표지를 놓치거나, 같은 줄을 되풀이하다 길이 한도에 잘립니다. 잘린 그림 글은 되풀이 앞 줄만 살리고, 그래프 블록은 원본 PDF 에서 288dpi 로 다시 그려 같은 PaddleOCR-VL 에 글자 위치를 함께 읽는 `Spotting:` 물음으로 다시 읽은 뒤 엔진 글과 한 줄씩 짝지어 합칩니다. 한자·가나가 섞인 줄은 버립니다(시험에서 모두 틀림). 지도·사진(그림 블록)은 다시 읽은 줄의 24%가 틀려 다시 읽지 않습니다.
 - **지우지 않고 표시** — 잡요소는 `keep: false` 와 이유(`drop_reason`)를 달아 남기고, 규칙이 바꾼 것은 `provenance` 에 기록합니다. 검수와 원인 찾기가 쉽습니다.
 - **GPU 없이 다시 조립** — 엔진 원시 결과를 `raw/` 에 남겨, 규칙을 고친 뒤 `kdp reassemble` 로 모델을 다시 돌리지 않고(GPU·원본 PDF 없이) 다시 만듭니다. `parse` 와 `reassemble` 의 출력이 바이트까지 같은지 통합 시험으로 확인합니다.
 
@@ -336,6 +339,7 @@ GPU 서버(시험한 장비: 클라우드 A40 46GB)에서는 `gpu_server/` 스�
 kdp doctor                      # 버전·가중치 점검(vllm-server 설정이면 VLM 서버도)
 kdp parse test2.pdf -o out      # → out/<문서 해시>/
 kdp reassemble out              # raw/ 로 다시 조립(모델 없이, 출력 폴더 전체 또는 문서 폴더 하나)
+kdp figure-ocr out              # 그래프 글자 다시 읽기가 빠진 그래프만 다시 읽기(VLM 서버 없이 파싱했거나 설정을 바꾼 문서)
 kdp describe out                # 그림 설명이 빠진 그림만 설명(설명 서버 없이 파싱했거나 설명 모델을 바꾼 문서)
 kdp schema > schema.json        # 정본 JSON Schema
 ```
@@ -373,8 +377,8 @@ python eval/figure_questions.py ask --out ans.jsonl && python eval/figure_questi
 
 ```
 src/kdp/
-├── cli.py          # kdp doctor · parse · reassemble · describe · schema
-├── pipeline.py     # parse / reassemble / describe 흐름
+├── cli.py          # kdp doctor · parse · reassemble · figure-ocr · describe · schema
+├── pipeline.py     # parse / reassemble / figure-ocr / describe 흐름
 ├── config.py       # 설정 읽기 · 엔진/조립 해시
 ├── convert.py      # 엔진 원시 결과 → 쪽·블록
 ├── geometry.py     # 논리 페이지 좌표
@@ -386,6 +390,7 @@ src/kdp/
 ├── enrich/         # 문서 메타 승격 · 개인정보 표시
 ├── qc/             # 품질 점검
 ├── io/, schema/    # 렌더·PDF 읽기·쓰기, 출력 스키마(pydantic)
+├── figure_ocr.py   # 그래프 글자 다시 읽기(원본 PDF 288dpi → 엔진 VLM 서버, Spotting:)
 ├── figure_desc.py  # 그림 설명 모델 부르기(토큰 확률 함께)
 ├── figure_qa.py    # 그림 물음 틀·정답 맞춤(합성·라벨·평가가 함께 씀)
 └── render_md.py    # 마크다운 출력

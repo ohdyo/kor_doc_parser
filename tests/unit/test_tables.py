@@ -1,5 +1,6 @@
 """표(기획서 4.3 규칙 1·6·13, D18) — 머리행, 제목·단위·출처 연결, 표 갈래, '이하 빈칸', 쪽 넘김 표."""
-from kdp.assemble.tables import appendage, header_rows, merge_tables, parse_rows, pipe_regroup, regroup, tables
+from kdp.assemble.tables import (appendage, header_rows, loop_free, merge_tables, parse_rows, pipe_regroup, regroup,
+                               salvage, tables)
 from kdp.classify.blocks import classify_blocks
 from kdp.config import Classify, QCCfg
 from kdp.qc.checks import run_checks
@@ -578,6 +579,58 @@ def test_truncated_chart_text_dropped():
     assert (a.figure_text, a.truncated) == (None, None)
     assert a.provenance == [{"rule": "figure_text_noise", "before": loop[:40], "truncated": "length"}]
     assert (b.figure_text, c.figure_text, c.truncated) == ("20주\n21주\n양구군", "2026 국민 안전 수칙", "repetition")
+
+
+# 실측 잘린 그림 글(runs/t1/out_base 의 엔진 응답 앞 26줄) — test4.pdf 10쪽 그래프(값 표지 20줄 뒤 되풀이), test5.pdf 13쪽 그림(읽은 글),
+# 17쪽 그림(지어낸 글)
+P10 = ["1600", "2026년 온열질환자 수(명)", "1400", "35.4", "30.4", "29.7", "29.2", "26.9", "27.5", "28.2", "26.3", "2026년 온열사명자 수(명)",
+       "1200", "31.5", "34.0", "365", "32.1", "29.0", "28.1", "26.7", "29.2", "26.3", "25.0", "29.8", "28.6", "2026년 평균 최고기온(℃)"]
+P13 = ["복태평양고기압 평년", "수준으로 확장", "(동쪽으로 후퇴)", "", "복태평양고기압", "서쪽으로 확장", "", "평년", "5880gpm", "",
+       "영향 태풍 력은 해", "5880gpm", "", "120°E", "150°E", "120°E", "150°E", "120°E", "150°E"]
+P17 = ["[대통령 엄항 대통 찍었던 최근 3년]", "( 엄통철 엄항 대통 많은 해 ]", "상승(2001년) 제2기류", "상승(2001년)",
+       "② 부위 BO*N 부문에서 꼬기압성 순환 장차", "대통 부동맹으로 절감", "이죄윤 김경", "③ 부동맹으로 절감하려 하다 이동",
+       "④ 부동맹으로 절감하려 하다", "⑤ 부동맹으로 절감하려 하다", "⑥ 부동맹으로 절감하려 하다", "⑦ 부동맹으로 절감하려 하다"]
+BODY = "북태평양고기압이 평년 수준으로 확장되었다가 동쪽으로 후퇴하고 서쪽으로 확장해 영향 태풍이 많았다."
+
+
+def test_loop_free_stops_at_repeats():
+    """되풀이 앞 줄 — 앞에 나온 줄과 똑같은 줄, 같은 간격으로 세는 수 셋(셋 모두 뺀다), 끝 8글자가 같은 줄 셋(셋 모두 뺀다)에서 멈춘다."""
+    assert loop_free("가\n나\n\n가\n다") == ["가", "나"]
+    assert loop_free("2026년 9월 충북 평균기온\nLON 125.4\n203.0\n203.1\n203.2") == ["2026년 9월 충북 평균기온", "LON 125.4"]
+    assert loop_free("범례\n1 온열질환자 효과 온기 온(°C)\n2 온열질환자 효과 온기 온(°C)\n3 온열질환자 효과 온기 온(°C)") == ["범례"]
+    assert loop_free("\n".join(P10)) == P10[:20]                                    # 7번째 줄 '29.2' 가 다시 나온다
+    assert loop_free("\n".join(P17)) == P17[:8]                                     # ④·⑤·⑥ 끝이 같다
+
+
+def test_salvage_chart_needs_long_prefix_image_needs_body_words():
+    """잘린 그래프 글은 되풀이 앞 줄이 SALVAGE_MIN_LINES 이상일 때만, 되풀이를 못 찾으면 버린다. 그림 글은 되풀이가 없으면 그대로,
+    있으면 한글 낱말 절반 이상이 본문에 있을 때만 둔다."""
+    assert salvage("\n".join(P10), "chart", "") == P10[:20]
+    assert salvage("2026년 9월 충북 평균기온\nLON 125.4\n203.0\n203.1\n203.2", "chart", "") is None
+    assert salvage("가\n나\n다", "chart", "") is None                               # 잘렸는데 되풀이를 못 찾은 그래프 글
+    assert salvage("0\n10\n20\n30", "image", "") is None                         # 첫 줄부터 되풀이 — 둘 줄이 없다
+    assert salvage("2026 국민 안전 수칙", "image", "") == ["2026 국민 안전 수칙"]       # 되풀이가 없는 그림 글
+    assert salvage("\n".join(P13), "image", "".join(BODY.split())) == [s for s in P13[:11] if s]
+    assert salvage("\n".join(P13), "image", "") is None
+    assert salvage("\n".join(P17), "image", "".join(BODY.split())) is None          # 본문에 없는 지어낸 낱말
+    assert salvage("AUAS50 KMA\n0312UTC JUL 2004\nH\nH", "image", "") == ["AUAS50 KMA", "0312UTC JUL 2004", "H"]   # 한글이 없으면 맞춰 볼 수 없다
+
+
+def test_truncated_figure_text_salvaged_or_dropped():
+    """잘린 그림 글은 되풀이 앞 줄만 둔다 — 남긴 잘린 글은 잘림 표시를 두고(QC), 못 살린 글은 버린 기록에 잘림 표시를 옮긴다."""
+    doc = _doc(("text", (60, 20, 540, 36), BODY), ("chart", (60, 60, 540, 300), None), ("image", (60, 320, 540, 500), None),
+               ("image", (60, 520, 540, 700), None))
+    _, a, b, c = doc.pages[0].blocks
+    a.figure_text, a.truncated = "\n".join(P10), "length"
+    b.figure_text, b.truncated = "\n".join(P13), "length"
+    c.figure_text, c.truncated = "\n".join(P17), "length"
+    _, a, b, c = tables(doc).pages[0].blocks
+    assert (a.figure_text.split("\n"), a.truncated) == (P10[:20], "length")
+    assert a.provenance == [{"rule": "figure_text_loop", "kept": 20, "lines": 26}]
+    assert b.figure_text.split("\n") == [s for s in P13[:11] if s] and b.truncated == "length"
+    assert b.provenance == [{"rule": "figure_text_loop", "kept": 8, "lines": sum(1 for s in P13 if s)}]
+    assert (c.figure_text, c.truncated) == (None, None)
+    assert c.provenance == [{"rule": "figure_text_noise", "before": "\n".join(P17)[:40], "truncated": "length"}]
 
 
 def test_header_rows_time_quarter_and_data_rows():
