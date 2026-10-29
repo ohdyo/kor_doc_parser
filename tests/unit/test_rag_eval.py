@@ -217,3 +217,27 @@ def test_answer_questions_load_both_formats(tmp_path):
     qs = ae.load(f)
     assert [q["docs"] for q in qs] == [["test2"], ["test3", "test5"]] and qs[0]["ev"] == [["양구군(0.7)"]] and qs[1]["ev"] == []
     assert len(ae.load(ae.QUESTIONS.parent / "rag_questions.yaml")) == 72                     # 검색 평가 질문도 같은 꼴로
+
+
+def test_answer_compare_helpers(tmp_path):
+    """7B 대 31B(D25) — 질문 파일 여럿(id 겹치면 멈춤), 근거만 주고 묻기의 조각 고르기(질문 문서만·근거 묶음이 모두 든 조각 먼저·없으면
+    묶음 하나라도·문서 차례), 문맥 속 수(쉼표 뗌), 다시 순위 최고 점수(캐시에 있는 것만)."""
+    f1, f2 = tmp_path / "a.yaml", tmp_path / "b.yaml"
+    f1.write_text('questions:\n  - {id: a1, doc: test2, type: 표, q: "값?", a: "0.7", evidence: [["양구군"], ["0.7"]]}\n', encoding="utf-8")
+    f2.write_text('questions:\n  - {id: b1, docs: [test3], type: 없음, q: "최댓값?", a: "문서에 없음"}\n', encoding="utf-8")
+    qs = ae.load([f1, f2])
+    assert [q["id"] for q in qs] == ["a1", "b1"]
+    with pytest.raises(SystemExit):
+        ae.load([f1, f1])
+    kv = {"c3": {"content": "양구군 0.7", "file_path": "test2", "chunk_order_index": 3},
+          "c1": {"content": "양구군 소개", "file_path": "test2", "chunk_order_index": 1},
+          "c2": {"content": "양구군 0.7", "file_path": "test3", "chunk_order_index": 0}}
+    assert [(c["id"], c["file_path"]) for c in ae.oracle_chunks(kv, qs[0])] == [("c3", "test2")]
+    kv["c3"]["content"] = "0.7"
+    assert [c["id"] for c in ae.oracle_chunks(kv, qs[0])] == ["c1", "c3"]
+    assert ae.numbers(["1,441건과 26.6℃", "2026년 26.6", None]) == ["1441", "2026", "26.6"]
+    data = {"chunks": [{"content": "1,441건"}], "entities": [{"entity_name": "2026년 온열질환", "description": "22명"}],
+            "relationships": [{"src_id": "A", "tgt_id": "71세", "description": "18.9"}]}
+    assert ae.numbers(ae.context_texts(data)) == ["1441", "18.9", "2026", "22", "71"]   # 엔티티 이름·관계 양끝 이름도 문맥이다
+    rr = type("R", (), {"cache": {("q", "x"): 0.2, ("q", "y"): 0.9}})()
+    assert (ae.max_rerank(rr, "q", ["x", "y", "z"]), ae.max_rerank(rr, "q", ["z"]), ae.max_rerank(None, "q", ["x"])) == (0.9, None, None)

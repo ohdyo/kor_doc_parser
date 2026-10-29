@@ -165,6 +165,8 @@ async def open_store(name: str, d: Path, tokens: int, dense: Dense, a, rr: Reran
     rag = LightRAG(working_dir=str(d), workspace=name, vector_storage="NanoVectorDBStorage",
                    chunk_token_size=tokens, chunk_overlap_token_size=a.overlap, entity_extract_max_gleaning=a.gleaning,
                    llm_model_func=no_llm if a.no_llm else llm, llm_model_name=a.llm_model, llm_model_max_async=a.llm_async,
+                   enable_llm_cache=getattr(a, "query_cache", True),   # 물음 답·키워드 캐시 — 답 비교는 끈다(추출 캐시는 따로)
+                   **({"default_llm_timeout": a.llm_timeout} if getattr(a, "llm_timeout", None) else {}),
                    embedding_func=EmbeddingFunc(embedding_dim=1024, max_token_size=8192, func=embed, model_name="bge-m3"),
                    addon_params=addon, **({"rerank_model_func": rerank, "min_rerank_score": 0.0, "rerank_model_max_async": 1,
                                            "default_rerank_timeout": 120} if rr else {}))   # 거르지 않고 차례만
@@ -294,6 +296,7 @@ def main(argv=None) -> None:
     ap.add_argument("--llm-model", default=LLM_MODEL)
     ap.add_argument("--llm-async", type=int, default=8)
     ap.add_argument("--llm-max-tokens", type=int, default=2048)
+    ap.add_argument("--llm-timeout", type=int, default=None, help="LLM 한 번의 시간 한도(초) — 없으면 LightRAG 기본 240, 31B 처럼 느린 모델은 늘린다")
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--top-k", type=int, default=40)
     ap.add_argument("--chunk-top-k", type=int, default=20)

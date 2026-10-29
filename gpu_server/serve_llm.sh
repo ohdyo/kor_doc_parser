@@ -3,12 +3,17 @@
 # 기본은 국내 모델 skt/A.X-4.0-Light(SK텔레콤, 7.3B, Apache-2.0, 문맥 16k). 더 큰 모델은 MODEL=Qwen/Qwen3-14B UTIL=0.8(Apache-2.0 —
 # 생각 모드는 eval/lightrag_eval.py 가 요청마다 끈다). 처음에는 가중치(A.X 약 15GB)를 받는다. PaddleOCR-VL 서버는 먼저 내린다.
 #   tmux new -d -s llm "bash /workspace/kor_doc_parser/gpu_server/serve_llm.sh > /workspace/llm.log 2>&1"
+# 31B(D25 — 7B 대 31B, rag_7b31b.sh): MODEL=<quantize_fp8.sh 의 FP8 폴더> NAME=websfactory/Webs-Sejong-31B-v7 UTIL=0.85 LEN=24576
+#   EXTRA='--language-model-only --max-num-batched-tokens 1024 --max-num-seqs 32' — NAME 은 평가의 --llm-model 과 같게(LightRAG 캐시
+#   열쇠). 그림·영상 인코더를 올리지 않아야 A40 에 최대 길이 요청 하나의 KV 가 들어간다(rag_7b31b.sh 머리 주석).
 export LC_ALL=C.UTF-8
 export VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1        # 사용 통계 전송을 끈다(설계 9장)
 export VLLM_USE_FLASHINFER_SAMPLER=0               # serve_vlm.sh 와 같은 까닭(README '겪은 문제')
 MODEL=${MODEL:-skt/A.X-4.0-Light}
+# shellcheck disable=SC2086                         # EXTRA 는 낱말로 나눠 넘긴다
 exec /workspace/envs/kdp-serve/bin/vllm serve "$MODEL" \
-  --served-model-name "$MODEL" \
+  --served-model-name "${NAME:-$MODEL}" \
   --gpu-memory-utilization "${UTIL:-0.6}" \
   --max-model-len "${LEN:-16384}" \
+  ${EXTRA:-} \
   --host 127.0.0.1 --port "${PORT:-8120}"

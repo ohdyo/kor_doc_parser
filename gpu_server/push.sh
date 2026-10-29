@@ -34,6 +34,9 @@ RAG=()                                                # RAG 하류 평가 기준
 for f in compare kdp_pipe lightrag_rpipe lightrag_eval_rpipe.log; do   # 그 로그. 새로 켠 서버에서 다시 만들지 않게(runs/ 는 커밋하지 않는다)
   [ -e "runs/rag_eval/$f" ] && RAG+=("runs/rag_eval/$f")
 done
+for f in kdp4 kdp_spot; do                            # 4회차 그림 설명·Spotting: 다시 읽기 기록 — 5회차 최종 출력을 다시 만든다(rag_7b31b.sh)
+  [ -d "runs/rag_eval4/$f" ] && RAG+=("runs/rag_eval4/$f")
+done
 if [ ${#RAG[@]} -gt 0 ]; then
   $E "$DEST" 'mkdir -p /workspace/rag_eval'
   rsync -az -e "$E" "${RAG[@]}" "$DEST:/workspace/rag_eval/"
